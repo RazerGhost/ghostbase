@@ -38,60 +38,83 @@ export function resetAllFloatPositions(): void {
 	localStorage.removeItem(STORAGE_KEY);
 }
 
-// Persisted grid order — separate key from float positions since docking a
-// widget shouldn't lose the spot it was reordered to, and vice versa.
-const ORDER_KEY = 'newtab:widget-order';
+// Which widgets are hidden from the canvas entirely — separate key again, same
+// reasoning as order/full-width above. Hidden widgets stay in the "hidden"
+// list so they can be brought back rather than losing their saved position.
+const HIDDEN_KEY = 'newtab:hidden-widgets';
 
-export function getWidgetOrder(): string[] | null {
-	if (typeof localStorage === 'undefined') return null;
+export function getHiddenWidgetIds(): string[] {
+	if (typeof localStorage === 'undefined') return [];
 	try {
-		const raw = localStorage.getItem(ORDER_KEY);
-		return raw ? JSON.parse(raw) : null;
+		const raw = localStorage.getItem(HIDDEN_KEY);
+		return raw ? JSON.parse(raw) : [];
 	} catch {
-		return null;
+		return [];
 	}
 }
 
-export function setWidgetOrder(order: string[]): void {
-	localStorage.setItem(ORDER_KEY, JSON.stringify(order));
+export function setHiddenWidgetIds(ids: string[]): void {
+	localStorage.setItem(HIDDEN_KEY, JSON.stringify(ids));
 }
 
-export function resetWidgetOrder(): void {
-	localStorage.removeItem(ORDER_KEY);
+export function resetHiddenWidgets(): void {
+	localStorage.removeItem(HIDDEN_KEY);
 }
 
-// Which docked widgets are stretched to span the full grid row — separate
-// key again, same reasoning as order vs. float position above.
-const FULL_WIDTH_KEY = 'newtab:widget-full-width';
+// Widgets merged into a single combined card — an array of groups, each a
+// small 2D grid of cells (row/col/rowSpan/colSpan, mirrors CSS Grid) that
+// render inside one shared card instead of as separate cards. This lets a
+// wide card span above several narrower cards in the row below it, not just
+// a single ordered chain. Same per-device-preference reasoning as everything
+// else in this file.
+const GROUPS_KEY = 'newtab:widget-groups';
 
-function readFullWidthIds(): string[] | null {
-	if (typeof localStorage === 'undefined') return null;
-	try {
-		const raw = localStorage.getItem(FULL_WIDTH_KEY);
-		return raw ? JSON.parse(raw) : null;
-	} catch {
+export type WidgetGroupCell = { id: string; row: number; col: number; rowSpan: number; colSpan: number };
+export type WidgetGroup = { cells: WidgetGroupCell[]; colFr?: number[] };
+
+// Two-step migration, both transparent the first time this is read in a
+// browser that still has an older shape saved:
+//   1. flat chain (`string[][]`, always a single horizontal row)
+//   2. bare grid-cell array (`WidgetGroupCell[]`, no column-width ratios)
+// both fold into the current `{ cells, colFr? }` shape.
+function migrateLegacyGroup(raw: unknown): WidgetGroup | null {
+	if (Array.isArray(raw)) {
+		if (raw.every((id) => typeof id === 'string')) {
+			return { cells: (raw as string[]).map((id, i) => ({ id, row: 0, col: i, rowSpan: 1, colSpan: 1 })) };
+		}
+		if (raw.every((cell) => cell && typeof cell === 'object' && typeof cell.id === 'string')) {
+			return { cells: raw as WidgetGroupCell[] };
+		}
 		return null;
+	}
+	if (raw && typeof raw === 'object' && Array.isArray((raw as WidgetGroup).cells)) {
+		return raw as WidgetGroup;
+	}
+	return null;
+}
+
+export function getWidgetGroups(): WidgetGroup[] {
+	if (typeof localStorage === 'undefined') return [];
+	try {
+		const raw = localStorage.getItem(GROUPS_KEY);
+		if (!raw) return [];
+		const parsed = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		const migrated = parsed.map(migrateLegacyGroup).filter((g): g is WidgetGroup => g !== null);
+		// Persist the migrated shape so this only has to happen once.
+		if (JSON.stringify(migrated) !== raw) setWidgetGroups(migrated);
+		return migrated;
+	} catch {
+		return [];
 	}
 }
 
-// Returns null (not []) when nothing has been saved yet — lets the caller
-// tell "never touched, use sensible defaults" apart from "user explicitly
-// shrank everything back down."
-export function getFullWidthIds(): string[] | null {
-	return readFullWidthIds();
+export function setWidgetGroups(groups: WidgetGroup[]): void {
+	localStorage.setItem(GROUPS_KEY, JSON.stringify(groups));
 }
 
-// Takes the complete set rather than toggling a single id — the caller
-// already has to know the full current set (including un-persisted
-// defaults) to compute the new state, so it should just hand that over
-// instead of this function re-deriving it from storage and silently
-// dropping any default that was never actually written yet.
-export function setFullWidthIds(ids: string[]): void {
-	localStorage.setItem(FULL_WIDTH_KEY, JSON.stringify(ids));
-}
-
-export function resetFullWidth(): void {
-	localStorage.removeItem(FULL_WIDTH_KEY);
+export function resetWidgetGroups(): void {
+	localStorage.removeItem(GROUPS_KEY);
 }
 
 // Whether the quick links row is displayed sorted by click count instead of

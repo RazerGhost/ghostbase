@@ -18,7 +18,16 @@
 	import Shuffle from '@lucide/svelte/icons/shuffle';
 	import GripVertical from '@lucide/svelte/icons/grip-vertical';
 	import LayoutGrid from '@lucide/svelte/icons/layout-grid';
-	import StretchHorizontal from '@lucide/svelte/icons/stretch-horizontal';
+	import EyeOff from '@lucide/svelte/icons/eye-off';
+	import Eye from '@lucide/svelte/icons/eye';
+	import ListTodo from '@lucide/svelte/icons/list-todo';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import CalendarDays from '@lucide/svelte/icons/calendar-days';
+	import Link2 from '@lucide/svelte/icons/link-2';
+	import Unlink from '@lucide/svelte/icons/unlink';
+	import Lock from '@lucide/svelte/icons/lock';
+	import MoreVertical from '@lucide/svelte/icons/more-vertical';
+	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import { enhance } from '$app/forms';
 	import { navLinks } from '$lib/config';
 	import {
@@ -26,15 +35,28 @@
 		setFloatPosition,
 		clearFloatPosition,
 		resetAllFloatPositions,
-		getWidgetOrder,
-		setWidgetOrder,
-		resetWidgetOrder,
-		getFullWidthIds,
-		setFullWidthIds,
-		resetFullWidth,
+		getHiddenWidgetIds,
+		setHiddenWidgetIds,
+		resetHiddenWidgets,
+		getWidgetGroups,
+		setWidgetGroups,
+		resetWidgetGroups,
 		getQuickLinksSortByClicks,
-		type FloatPosition
+		type FloatPosition,
+		type WidgetGroup as StoredWidgetGroup
 	} from '$lib/client/newtab-layout';
+	import {
+		gridDimensions,
+		resolveColFr,
+		setColFr,
+		edgeDockTarget,
+		insertCell,
+		removeCell,
+		repackRowUnderSpan,
+		type DockEdge,
+		type WidgetGroup,
+		type GroupCell
+	} from '$lib/client/widget-grid';
 	import QuickLinksModal from '$lib/components/QuickLinksModal.svelte';
 	import QuickLinkIcon from '$lib/components/QuickLinkIcon.svelte';
 	import type { PageData } from './$types';
@@ -43,6 +65,7 @@
 
 	let settingsOpen = $state(false);
 	let queryInput = $state(data.unsplashQuery);
+	let icsUrlInput = $state(data.icsUrl ?? '');
 
 	// Notes is intentionally left out of the site-wide nav (it's a private,
 	// login-gated route) — but it belongs on this personal dashboard, so it's
@@ -58,14 +81,40 @@
 		Notes: StickyNote
 	} as const;
 
-	// Search bangs — !g google, !yt youtube, !gh github, !w wikipedia.
-	// Anything else (or no bang) falls through to DuckDuckGo, same as before.
-	const bangs: Record<string, (q: string) => string> = {
-		'!d': (q) => `https://duckduckgo.com/?q=${encodeURIComponent(q)}`,
-		'!yt': (q) => `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`,
-		'!gh': (q) => `https://github.com/search?q=${encodeURIComponent(q)}`,
-		'!w': (q) => `https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(q)}`
-	};
+	// Search bangs, listed here (rather than a plain Record) so the same data
+	// can drive both dispatch and the "!" autocomplete hint in the search
+	// dropdown. Anything else (or no bang) falls through to DuckDuckGo.
+	// '!notes' is a local bang — it searches this site's own private notes
+	// instead of the open web, so its run() is a relative path, not a full URL.
+	type Bang = { trigger: string; label: string; run: (q: string) => string };
+	const BANGS: Bang[] = [
+		{ trigger: '!d', label: 'DuckDuckGo', run: (q) => `https://duckduckgo.com/?q=${encodeURIComponent(q)}` },
+		{
+			trigger: '!yt',
+			label: 'YouTube',
+			run: (q) => `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`
+		},
+		{ trigger: '!gh', label: 'GitHub', run: (q) => `https://github.com/search?q=${encodeURIComponent(q)}` },
+		{
+			trigger: '!w',
+			label: 'Wikipedia',
+			run: (q) => `https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(q)}`
+		},
+		{
+			trigger: '!mdn',
+			label: 'MDN',
+			run: (q) => `https://developer.mozilla.org/en-US/search?q=${encodeURIComponent(q)}`
+		},
+		{
+			trigger: '!maps',
+			label: 'Google Maps',
+			run: (q) => `https://www.google.com/maps/search/${encodeURIComponent(q)}`
+		},
+		{ trigger: '!notes', label: 'Notes', run: (q) => `/notes?q=${encodeURIComponent(q)}` }
+	];
+	const bangs: Record<string, (q: string) => string> = Object.fromEntries(
+		BANGS.map((b) => [b.trigger, b.run])
+	);
 
 	let query = $state('');
 	let searchInputEl = $state<HTMLInputElement | undefined>();
@@ -87,28 +136,38 @@
 		return isBareDomain ? `https://${input}` : null;
 	}
 
-	function runSearch(raw: string) {
-		const trimmed = raw.trim();
-		if (!trimmed) return;
-		logSearch(trimmed);
-
+	// Resolves what a raw query string should navigate to — split out from
+	// runSearch so the open-in-new-tab modifier (Ctrl/Cmd+Enter) can reuse the
+	// exact same resolution logic without duplicating it.
+	function resolveSearchUrl(trimmed: string): string {
 		const directUrl = urlToOpen(trimmed);
-		if (directUrl) {
-			window.location.href = directUrl;
-			return;
-		}
+		if (directUrl) return directUrl;
 
 		const [maybeBang, ...rest] = trimmed.split(' ');
 		const bang = bangs[maybeBang.toLowerCase()];
-		if (bang && rest.length) {
-			window.location.href = bang(rest.join(' '));
-			return;
-		}
-		window.location.href = `https://duckduckgo.com/?q=${encodeURIComponent(trimmed)}`;
+		if (bang && rest.length) return bang(rest.join(' '));
+
+		return `https://duckduckgo.com/?q=${encodeURIComponent(trimmed)}`;
+	}
+
+	function navigateTo(url: string, openInNewTab: boolean) {
+		if (openInNewTab) window.open(url, '_blank', 'noopener');
+		else window.location.href = url;
+	}
+
+	function runSearch(raw: string, openInNewTab = false) {
+		const trimmed = raw.trim();
+		if (!trimmed) return;
+		logSearch(trimmed);
+		navigateTo(resolveSearchUrl(trimmed), openInNewTab);
 	}
 
 	function submitSearch(event: SubmitEvent) {
 		event.preventDefault();
+		if (selectedIndex >= 0 && suggestions[selectedIndex]) {
+			chooseSuggestion(suggestions[selectedIndex]);
+			return;
+		}
 		runSearch(query);
 	}
 
@@ -123,7 +182,13 @@
 			searchInputEl?.focus();
 		} else if (event.key === 'Escape' && target === searchInputEl) {
 			query = '';
+			searchFocused = false;
 			searchInputEl?.blur();
+		} else if (!isTyping && event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'l') {
+			// Alt+L toggles whether widget cards can be dragged at all — a
+			// quick "stop me from bumping things" lock, see dragEnabled above.
+			event.preventDefault();
+			dragEnabled = !dragEnabled;
 		} else if (!isTyping && !event.ctrlKey && !event.altKey && !event.metaKey) {
 			const link = quickLinkForShortcut(event.key);
 			if (link) {
@@ -132,6 +197,209 @@
 				window.location.href = link.url;
 			}
 		}
+	}
+
+	// --- Inline calculator ---------------------------------------------------
+	// A small hand-rolled recursive-descent parser (never eval) for +-*/() —
+	// just enough to let "12 * (4 + 1)" resolve inline in the search dropdown
+	// instead of round-tripping to a web search for basic arithmetic.
+	function tokenizeArithmetic(expr: string): string[] {
+		return expr.match(/\d+\.?\d*|\.\d+|[+\-*/()]/g) ?? [];
+	}
+
+	class ArithmeticParser {
+		private pos = 0;
+		private tokens: string[];
+		constructor(tokens: string[]) {
+			this.tokens = tokens;
+		}
+
+		private peek() {
+			return this.tokens[this.pos];
+		}
+		private next() {
+			return this.tokens[this.pos++];
+		}
+
+		parse(): number {
+			const value = this.parseExpression();
+			if (this.pos !== this.tokens.length) throw new Error('Unexpected trailing input');
+			return value;
+		}
+		private parseExpression(): number {
+			let value = this.parseTerm();
+			while (this.peek() === '+' || this.peek() === '-') {
+				const op = this.next();
+				const rhs = this.parseTerm();
+				value = op === '+' ? value + rhs : value - rhs;
+			}
+			return value;
+		}
+		private parseTerm(): number {
+			let value = this.parseFactor();
+			while (this.peek() === '*' || this.peek() === '/') {
+				const op = this.next();
+				const rhs = this.parseFactor();
+				value = op === '*' ? value * rhs : value / rhs;
+			}
+			return value;
+		}
+		private parseFactor(): number {
+			if (this.peek() === '-') {
+				this.next();
+				return -this.parseFactor();
+			}
+			if (this.peek() === '(') {
+				this.next();
+				const value = this.parseExpression();
+				if (this.next() !== ')') throw new Error('Expected )');
+				return value;
+			}
+			const token = this.next();
+			const num = token === undefined ? NaN : Number(token);
+			if (Number.isNaN(num)) throw new Error('Expected a number');
+			return num;
+		}
+	}
+
+	// Requires at least one operator so a bare number (or a recent search that
+	// happens to be all digits) doesn't get hijacked into "calculator" mode.
+	function evaluateArithmetic(expr: string): number | null {
+		if (!/^[\d\s+\-*/().]+$/.test(expr) || !/[+\-*/]/.test(expr)) return null;
+		try {
+			const tokens = tokenizeArithmetic(expr);
+			if (!tokens.length) return null;
+			const value = new ArithmeticParser(tokens).parse();
+			return Number.isFinite(value) ? value : null;
+		} catch {
+			return null;
+		}
+	}
+
+	// Strips floating-point noise (e.g. 0.1 + 0.2) without turning legitimate
+	// long decimals into scientific notation.
+	function formatCalcValue(value: number): string {
+		return Number(value.toFixed(10)).toString();
+	}
+
+	// --- Search suggestions dropdown ---------------------------------------
+	// Combines recent searches, matching quick links, and (when the query
+	// starts with "!") a hint list of available bangs — replaces the old flat
+	// row of recent-search pills with a real, keyboard-navigable omnibox.
+	type Suggestion =
+		| { kind: 'search'; value: string }
+		| { kind: 'link'; id: number; label: string; url: string }
+		| { kind: 'bang'; trigger: string; label: string }
+		| { kind: 'calc'; expression: string; value: number };
+
+	let searchFocused = $state(false);
+	let selectedIndex = $state(-1);
+
+	// Client-side removal is optimistic — data.recentSearches is server load
+	// data and won't reflect the delete until the next full reload, so this
+	// hides it from the dropdown immediately while the fetch runs in the
+	// background.
+	let removedSearches = $state<Set<string>>(new Set());
+	const visibleRecentSearches = $derived(data.recentSearches.filter((s) => !removedSearches.has(s)));
+
+	function removeSearchSuggestion(value: string) {
+		removedSearches = new Set([...removedSearches, value]);
+		const body = new FormData();
+		body.set('query', value);
+		fetch('?/removeSearch', { method: 'POST', body }).catch(() => {});
+	}
+
+	const suggestions = $derived.by((): Suggestion[] => {
+		const trimmed = query.trim();
+
+		if (trimmed.startsWith('!')) {
+			const partial = trimmed.slice(1).toLowerCase();
+			return BANGS.filter((b) => b.trigger.slice(1).toLowerCase().startsWith(partial)).map(
+				(b): Suggestion => ({ kind: 'bang', trigger: b.trigger, label: b.label })
+			);
+		}
+
+		if (!trimmed) {
+			return visibleRecentSearches.map((value): Suggestion => ({ kind: 'search', value }));
+		}
+
+		const calcValue = evaluateArithmetic(trimmed);
+		const calcSuggestion: Suggestion[] =
+			calcValue !== null ? [{ kind: 'calc', expression: trimmed, value: calcValue }] : [];
+
+		const lower = trimmed.toLowerCase();
+		const searchMatches: Suggestion[] = visibleRecentSearches
+			.filter((s) => s.toLowerCase().includes(lower))
+			.map((value) => ({ kind: 'search', value }));
+		const linkMatches: Suggestion[] = data.quickLinks
+			.filter((l) => l.label.toLowerCase().includes(lower))
+			.map((l) => ({ kind: 'link', id: l.id, label: l.label, url: l.url }));
+
+		return [...calcSuggestion, ...searchMatches, ...linkMatches].slice(0, 8);
+	});
+
+	const dropdownOpen = $derived(searchFocused && suggestions.length > 0);
+
+	// Keeps the highlighted row in range whenever the suggestion list itself
+	// changes (new keystroke, focus, etc.) rather than pointing at a row that
+	// no longer exists — except a calculator result, which auto-highlights so
+	// a plain Enter copies it immediately (standard omnibox behavior).
+	$effect(() => {
+		selectedIndex = suggestions[0]?.kind === 'calc' ? 0 : -1;
+	});
+
+	let calcCopied = $state(false);
+
+	function chooseSuggestion(suggestion: Suggestion, openInNewTab = false) {
+		if (suggestion.kind === 'search') {
+			runSearch(suggestion.value, openInNewTab);
+		} else if (suggestion.kind === 'link') {
+			trackQuickLinkClick(suggestion.id);
+			navigateTo(suggestion.url, openInNewTab);
+		} else if (suggestion.kind === 'calc') {
+			navigator.clipboard?.writeText(formatCalcValue(suggestion.value)).catch(() => {});
+			calcCopied = true;
+			setTimeout(() => (calcCopied = false), 1500);
+		} else {
+			// Bang hint — fill the trigger in and keep typing rather than
+			// searching immediately, since a bang alone isn't a useful query.
+			query = `${suggestion.trigger} `;
+			searchInputEl?.focus();
+		}
+	}
+
+	// Ctrl/Cmd+Enter opens the resolved destination in a new tab instead of
+	// navigating away from the dashboard — checked ahead of the dropdownOpen
+	// guard below since it must also work with the dropdown closed (a plain
+	// query with no suggestions showing).
+	function handleSearchKeydown(event: KeyboardEvent) {
+		if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+			event.preventDefault();
+			if (selectedIndex >= 0 && suggestions[selectedIndex]) {
+				chooseSuggestion(suggestions[selectedIndex], true);
+			} else {
+				runSearch(query, true);
+			}
+			return;
+		}
+
+		if (!dropdownOpen) return;
+		if (event.key === 'ArrowDown') {
+			event.preventDefault();
+			selectedIndex = Math.min(selectedIndex + 1, suggestions.length - 1);
+		} else if (event.key === 'ArrowUp') {
+			event.preventDefault();
+			selectedIndex = Math.max(selectedIndex - 1, -1);
+		}
+	}
+
+	// Delayed so a click on a dropdown suggestion (which the button's
+	// onmousedown already guards against stealing focus) has a chance to
+	// register before the dropdown disappears.
+	function handleSearchBlur() {
+		setTimeout(() => {
+			searchFocused = false;
+		}, 150);
 	}
 
 	let now = $state(new Date());
@@ -194,6 +462,22 @@
 	// --- Weather (client-side, no API key — Open-Meteo) -------------------
 	type WeatherState = { tempF: number; code: number } | 'denied' | 'unavailable' | 'timeout' | 'error' | null;
 	let weather = $state<WeatherState>(null);
+
+	// "Today 3:00 PM" / "Tomorrow" (all-day) / "Jul 26" for anything further out.
+	function agendaLabel(start: Date, allDay: boolean): string {
+		const now = new Date();
+		const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+		const diffDays = Math.round((startDay.getTime() - today.getTime()) / 86400000);
+		const dayLabel =
+			diffDays === 0
+				? 'Today'
+				: diffDays === 1
+					? 'Tomorrow'
+					: start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+		if (allDay) return dayLabel;
+		return `${dayLabel} ${start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+	}
 
 	function weatherLabel(code: number): string {
 		if (code === 0) return 'Clear';
@@ -289,6 +573,8 @@
 		fetch('?/favoritePhoto', { method: 'POST', body }).catch(() => {});
 	}
 
+	const favoritedPhotos = $derived(data.photoHistory.filter((p) => p.favorited));
+
 	// --- Pomodoro timer (client-only state, completed segments logged server-side) --------------------
 	const WORK_SECONDS = 25 * 60;
 	const BREAK_SECONDS = 5 * 60;
@@ -349,15 +635,22 @@
 	let noteBody = $state('');
 	let noteSaved = $state(false);
 
-	// --- Free-floating widgets ---------------------------------------------
-	// Any widget can be dragged out of its grid slot by its grip handle; once
-	// dragged it becomes position:fixed and remembers its spot per-device via
-	// localStorage (see $lib/client/newtab-layout.ts) — deliberately not
-	// synced server-side, this is layout preference, not data.
-	// Live/frequently-changing widgets lead, so the eye lands on what's
-	// actually fresh right now; the static "right now" status blurb (set
-	// once and left alone for days) sits further down instead of being the
-	// first, full-width thing on the page.
+	// --- To-do checklist --------------------------------------------------
+	// Done items sink to the bottom (display-only sort — doesn't touch the
+	// server-side `position`, same idea as the quick links click-sort toggle).
+	let todoBody = $state('');
+	const displayedTodoItems = $derived(
+		[...data.todoItems].sort((a, b) => Number(a.done) - Number(b.done) || a.position - b.position)
+	);
+
+	// --- Free-floating / mergeable widgets ----------------------------------
+	// Every widget lives as its own card, freely draggable anywhere on the
+	// page — there's no grid to "belong" to. A card remembers its spot
+	// per-device via localStorage (see $lib/client/newtab-layout.ts) —
+	// deliberately not synced server-side, this is layout preference, not
+	// data. Dropping one card onto another merges them into a single
+	// combined card (see mergeSlots) rather than reordering, since position
+	// on a freeform canvas already *is* the arrangement.
 	const WIDGET_IDS = [
 		'now-playing',
 		'discord',
@@ -366,6 +659,8 @@
 		'recent-notes',
 		'weather',
 		'focus',
+		'todo',
+		'agenda',
 		'note'
 	] as const;
 	type WidgetId = (typeof WIDGET_IDS)[number];
@@ -378,113 +673,516 @@
 		watching: { label: 'Currently watching', icon: Clapperboard },
 		weather: { label: 'Weather', icon: CloudSun },
 		focus: { label: 'Focus timer', icon: Timer },
+		todo: { label: 'To-do', icon: ListTodo },
+		agenda: { label: 'Agenda', icon: CalendarDays },
 		note: { label: 'Quick note', icon: StickyNote }
 	};
 
-	let widgetEls: Partial<Record<WidgetId, HTMLDivElement>> = {};
-	let floatPositions = $state<Partial<Record<WidgetId, FloatPosition>>>({});
-	// Height of the widget currently being dragged, captured at pointerdown —
-	// used to size its grid placeholder (see startDrag/template) so the slot
-	// doesn't collapse the instant the drag starts.
-	let dragPlaceholderHeight = $state<number | null>(null);
-	// Persisted grid order (see $lib/client/newtab-layout.ts) — a widget's
-	// slot within the grid, independent of whether it's currently floating.
-	let widgetOrder = $state<WidgetId[]>([...WIDGET_IDS]);
-	let dragOverId = $state<WidgetId | null>(null);
-	// Widgets stretched to span the full grid row instead of one column, by
-	// default for the two whose content genuinely wants the space — a
-	// paragraph of status text and a text input aren't usable squeezed into
-	// a third of the grid. Everything else defaults to one column, which is
-	// what the rest were actually designed at (poster thumbnails, a short
-	// stat line, etc.) — still overridable per-widget via the stretch toggle.
-	const DEFAULT_FULL_WIDTH_IDS: WidgetId[] = ['right-now', 'note'];
-	let fullWidthIds = $state<Set<WidgetId>>(new Set(DEFAULT_FULL_WIDTH_IDS));
+	function widgetHasData(id: WidgetId): boolean {
+		if (id === 'right-now') return data.statusItems.length > 0;
+		if (id === 'watching') return data.watching.length > 0;
+		if (id === 'agenda') return data.agenda.length > 0;
+		return true;
+	}
+	function widgetVisible(id: WidgetId): boolean {
+		return !hiddenIds.has(id) && widgetHasData(id);
+	}
+
+	// A "slot" is one rendered card — either a single widget, or (after
+	// docking cards together, see mergeAtEdge below) a small 2D grid of
+	// widget ids sharing one card. Position/hiding are keyed off a slot's
+	// `key` rather than a raw widget id, so a merged card behaves as one
+	// unit. `group` is null for a standalone card.
+	type Slot = { key: string; ids: WidgetId[]; group: WidgetGroup<WidgetId> | null };
+
+	// Deterministic key/id-order for a group, independent of the order its
+	// cells happen to sit in the array — keeps floatPositions/DOM keys
+	// stable across merges and re-derivations.
+	function groupKey(group: WidgetGroup<WidgetId>): string {
+		return group.cells
+			.slice()
+			.sort((a, b) => a.row - b.row || a.col - b.col)
+			.map((c) => c.id)
+			.join('+');
+	}
+
+	// Widgets merged into shared cards — persisted per-device (see
+	// newtab-layout.ts), same as everything else in this section.
+	let groups = $state<WidgetGroup<WidgetId>[]>([]);
+
+	let widgetEls: Record<string, HTMLDivElement> = {};
+	// Per-widget (not per-slot) element refs — a merged slot has one entry
+	// per member so dock-zone detection can test against the specific
+	// sub-widget's rect, not just the whole shared card.
+	let cellEls: Record<string, HTMLDivElement> = {};
+	function registerCellEl(node: HTMLDivElement, id: WidgetId) {
+		cellEls[id] = node;
+		return {
+			destroy() {
+				if (cellEls[id] === node) delete cellEls[id];
+			}
+		};
+	}
+	let floatPositions = $state<Record<string, FloatPosition>>({});
+	// The specific sub-widget edge currently highlighted as a drop target —
+	// replaces the old whole-card highlight now that docking is per-edge.
+	let dragOverEdge = $state<{ cellId: WidgetId; edge: DockEdge } | null>(null);
+
+	// Which card's kebab ("⋮") menu is open, if any — closed on an outside
+	// click, same pattern as the search dropdown's blur handling above.
+	let openMenuKey = $state<string | null>(null);
+	$effect(() => {
+		if (!openMenuKey) return;
+		function onDocClick(e: MouseEvent) {
+			if (!(e.target as HTMLElement).closest('[data-kebab-menu]')) openMenuKey = null;
+		}
+		document.addEventListener('click', onDocClick);
+		return () => document.removeEventListener('click', onDocClick);
+	});
+
+	// Widgets hidden from the canvas entirely — kept as a Set of raw ids
+	// (not slot keys), since the hide/show control on a merged card bundles
+	// all its members together (see hideSlot below), and this lets an
+	// individual member fall back to visible on its own if it's ever
+	// unlinked from a group where only it was hidden.
+	let hiddenIds = $state<Set<WidgetId>>(new Set());
+
+	// Whether dragging (moving/merging) is enabled at all — toggled by the
+	// Alt+L keybind below. Session-only (not persisted): each fresh tab
+	// starts unlocked, since the point is a quick "stop me from bumping
+	// things while I click around" switch, not a durable setting.
+	let dragEnabled = $state(true);
+
+	// Deliberately reads only from localStorage helpers here, never from the
+	// reactive $state vars this effect writes to (groups, floatPositions,
+	// etc.) — reading one of those back after writing it, within the same
+	// effect run, would make the effect depend on its own write and
+	// re-trigger itself indefinitely (Svelte 5's effect_update_depth_exceeded).
+	// Every value below is threaded through local variables instead.
+	// A group loaded from storage is only valid if every cell id is a known
+	// widget — guards against a stale/hand-edited localStorage value.
+	function isValidGroup(g: StoredWidgetGroup): g is WidgetGroup<WidgetId> {
+		return g.cells.every((c) => (WIDGET_IDS as readonly string[]).includes(c.id));
+	}
 
 	$effect(() => {
-		const loaded: Partial<Record<WidgetId, FloatPosition>> = {};
+		const resolvedGroups = getWidgetGroups().filter(isValidGroup);
+		groups = resolvedGroups;
+
+		const seen = new Set<WidgetId>();
+		const loadedSlots: Slot[] = [];
 		for (const id of WIDGET_IDS) {
-			const pos = getFloatPosition(id);
-			if (pos) loaded[id] = pos;
-		}
-		floatPositions = loaded;
-
-		const savedOrder = getWidgetOrder();
-		if (savedOrder) {
-			// Guard against a stale saved order (widgets renamed/removed since
-			// it was written) by keeping only known ids, then appending any
-			// new ids the saved order predates.
-			const known = savedOrder.filter((id): id is WidgetId => (WIDGET_IDS as readonly string[]).includes(id));
-			const missing = WIDGET_IDS.filter((id) => !known.includes(id));
-			widgetOrder = [...known, ...missing];
+			if (seen.has(id)) continue;
+			const group = resolvedGroups.find((g) => g.cells.some((c) => c.id === id)) ?? null;
+			const ids = group ? group.cells.map((c) => c.id) : [id];
+			ids.forEach((gid) => seen.add(gid));
+			loadedSlots.push({ key: group ? groupKey(group) : id, ids, group });
 		}
 
-		// null = never saved, so keep the defaults above; a saved (even
-		// empty) array means the user has explicitly chosen a set and that
-		// should win outright, including "nothing full-width."
-		const savedFullWidth = getFullWidthIds();
-		fullWidthIds = new Set(
-			(savedFullWidth ?? DEFAULT_FULL_WIDTH_IDS).filter((id): id is WidgetId =>
-				(WIDGET_IDS as readonly string[]).includes(id)
-			)
+		const loadedFloat: Record<string, FloatPosition> = {};
+		for (const slot of loadedSlots) {
+			const pos = getFloatPosition(slot.key);
+			if (pos) loadedFloat[slot.key] = pos;
+		}
+		floatPositions = loadedFloat;
+
+		hiddenIds = new Set(
+			getHiddenWidgetIds().filter((id): id is WidgetId => (WIDGET_IDS as readonly string[]).includes(id))
 		);
 	});
 
-	function setsEqual(set: Set<WidgetId>, ids: WidgetId[]): boolean {
-		return set.size === ids.length && ids.every((id) => set.has(id));
+	// All slots, unfiltered by visibility — the canonical source both the
+	// canvas (which then filters per-slot) and the hidden-widgets tray
+	// (which wants the opposite filter) build from. WIDGET_IDS order is
+	// just a stable base for grouping/indexing — it has no visual meaning
+	// once every card is independently positioned.
+	const slots = $derived.by((): Slot[] => {
+		const seen = new Set<WidgetId>();
+		const result: Slot[] = [];
+		for (const id of WIDGET_IDS) {
+			if (seen.has(id)) continue;
+			const group = groups.find((g) => g.cells.some((c) => c.id === id)) ?? null;
+			const ids = group ? group.cells.map((c) => c.id) : [id];
+			ids.forEach((gid) => seen.add(gid));
+			result.push({ key: group ? groupKey(group) : id, ids, group });
+		}
+		return result;
+	});
+
+	// Cards default to a narrow width until dragged wider via the resize
+	// handle (see startResize) — width lives on the same per-card position
+	// record as x/y, rather than a separate "full width" grid-row concept
+	// that doesn't mean anything on a freeform canvas.
+	const CARD_WIDTH_NARROW = 260;
+	const CARD_GAP = 16;
+	// A never-measured card's assumed height, used only until its real
+	// height is known (see measuredHeights below) — deliberately generous
+	// so the very first layout pass doesn't undershoot and overlap.
+	const CARD_HEIGHT_FALLBACK = 190;
+
+	// Where the free-floating canvas starts, vertically — measured off the
+	// actual centered header block (clock/search/nav/quick links) via
+	// canvasAnchorEl below, rather than a hardcoded pixel guess, since the
+	// header's height (and its centered position within the viewport)
+	// varies with viewport height and content (e.g. whether quick links
+	// exist at all).
+	let canvasAnchorEl = $state<HTMLElement | undefined>();
+	let canvasTop = $state(460);
+	$effect(() => {
+		if (!canvasAnchorEl) return;
+		const el = canvasAnchorEl;
+		function update() {
+			canvasTop = el.getBoundingClientRect().bottom + 32;
+		}
+		update();
+		const ro = new ResizeObserver(update);
+		ro.observe(el);
+		window.addEventListener('resize', update);
+		return () => {
+			ro.disconnect();
+			window.removeEventListener('resize', update);
+		};
+	});
+
+	// Real rendered height per slot, kept in sync via a ResizeObserver (see
+	// registerHeightObserver) so the default-position packer below can
+	// place cards by their actual height instead of a fixed row height —
+	// widgets render at very different heights (e.g. a 3-item notes list
+	// vs. a single status line), so a fixed row spacing overlapped taller
+	// cards with whatever landed in the row below them.
+	let measuredHeights = $state<Record<string, number>>({});
+	function registerHeightObserver(node: HTMLDivElement, key: string) {
+		const ro = new ResizeObserver(([entry]) => {
+			const height = entry.contentRect.height + 32; // + card padding
+			if (measuredHeights[key] !== height) measuredHeights = { ...measuredHeights, [key]: height };
+		});
+		ro.observe(node);
+		return {
+			destroy() {
+				ro.disconnect();
+			}
+		};
 	}
 
-	function toggleFullWidth(id: WidgetId) {
-		const next = new Set(fullWidthIds);
-		if (next.has(id)) next.delete(id);
-		else next.add(id);
-		fullWidthIds = next;
-		setFullWidthIds([...next]);
+	// Column-fill ("masonry") placement for every slot that hasn't been
+	// explicitly dragged — each card goes into whichever column is
+	// currently shortest, using its real measured height (or the fallback
+	// for a card that hasn't rendered/measured yet), so cards pack tightly
+	// without overlapping regardless of how tall any individual card is.
+	const packedPositions = $derived.by((): Record<string, FloatPosition> => {
+		const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
+		const cols = Math.max(1, Math.floor((viewportWidth - CARD_GAP) / (CARD_WIDTH_NARROW + CARD_GAP)));
+		const totalWidth = cols * CARD_WIDTH_NARROW + (cols - 1) * CARD_GAP;
+		const startX = Math.max(CARD_GAP, (viewportWidth - totalWidth) / 2);
+		const colBottoms = new Array(cols).fill(canvasTop);
+
+		const result: Record<string, FloatPosition> = {};
+		for (const slot of slots) {
+			const col = colBottoms.indexOf(Math.min(...colBottoms));
+			const y = colBottoms[col];
+			result[slot.key] = { x: startX + col * (CARD_WIDTH_NARROW + CARD_GAP), y, width: CARD_WIDTH_NARROW };
+			colBottoms[col] = y + (measuredHeights[slot.key] ?? CARD_HEIGHT_FALLBACK) + CARD_GAP;
+		}
+		return result;
+	});
+
+	function defaultPosition(key: string): FloatPosition {
+		return packedPositions[key] ?? { x: CARD_GAP, y: canvasTop, width: CARD_WIDTH_NARROW };
 	}
 
-	// Single pointer-based gesture drives both reordering and floating —
-	// native HTML5 drag-and-drop (the previous approach) unreliably lost the
-	// drag whenever it started over a link, button, or text input inside a
-	// widget (the browser hijacks it into a link/text drag instead), which
-	// made reordering feel broken. Grabbing the grip now always works the
-	// same way regardless of what's under the cursor: the widget detaches
-	// and visibly follows the pointer (activeDragId drives the "lifted"
-	// look below); if you release it over another docked widget, that
-	// widget highlights and the drag reorders into that slot; release
-	// anywhere else and it stays floating at the drop point.
-	let activeDragId = $state<WidgetId | null>(null);
+	// A slot's position right now — its live on-screen rect if mounted,
+	// otherwise its algorithmic default. Used whenever a position needs to
+	// be captured/carried over (merge, unlink, resize) rather than read
+	// from floatPositions directly, since an untouched card has no entry
+	// there yet.
+	function currentPositionFor(slot: Slot): FloatPosition {
+		const saved = floatPositions[slot.key];
+		if (saved) return saved;
+		const el = widgetEls[slot.key];
+		if (el) {
+			const rect = el.getBoundingClientRect();
+			return { x: rect.left, y: rect.top, width: rect.width };
+		}
+		return defaultPosition(slot.key);
+	}
 
-	// document.elementFromPoint would otherwise always hit the dragged
-	// widget itself (it's rendered right under the cursor) — hiding it from
+	const CARD_WIDTH_MIN = 200;
+	const CARD_WIDTH_MAX = 720;
+
+	// Resizing a merged card that has a "spanning" cell (one with a row of
+	// other cells docked directly below it — e.g. a wide card over 2-3
+	// narrower cards) also needs to update that cell's colSpan and repack
+	// the row underneath into the new width — the one case the spec calls
+	// out where sibling relayout is expected to happen automatically. Maps
+	// the new pixel width to an approximate column count so a continuous
+	// drag-resize still produces a sensible integer grid.
+	function repackSpanningCellsFor(slot: Slot, width: number) {
+		if (!slot.group) return;
+		const group = slot.group;
+		const belowRowFor = (cell: GroupCell<WidgetId>) =>
+			group.cells.filter((c) => c.row === cell.row + cell.rowSpan && c.col >= cell.col && c.col < cell.col + cell.colSpan);
+		const spanningCells = group.cells.filter((cell) => belowRowFor(cell).length > 0);
+		if (!spanningCells.length) return;
+
+		const approxCols = Math.max(1, Math.round((width + CARD_GAP) / (CARD_WIDTH_NARROW + CARD_GAP)));
+		let nextGroup = group;
+		for (const cell of spanningCells) {
+			const belowCount = belowRowFor(cell).length;
+			const newColSpan = Math.min(Math.max(1, approxCols), Math.max(belowCount, cell.colSpan));
+			if (newColSpan !== cell.colSpan) nextGroup = repackRowUnderSpan(nextGroup, cell.id, newColSpan);
+		}
+		if (nextGroup !== group) {
+			const nextGroups = [...groups.filter((g) => g !== group), nextGroup];
+			groups = nextGroups;
+			setWidgetGroups(nextGroups);
+		}
+	}
+
+	// Free drag-resize via a handle on the card's bottom-right corner —
+	// replaces the old binary narrow/wide toggle button. Mirrors startDrag's
+	// pointer-tracking approach (window listeners, no capture needed).
+	let activeResizeKey = $state<string | null>(null);
+
+	function startResize(event: PointerEvent, slot: Slot) {
+		if (!dragEnabled) return;
+		event.preventDefault();
+		event.stopPropagation();
+
+		const origin = currentPositionFor(slot);
+		activeResizeKey = slot.key;
+		const startX = event.clientX;
+
+		function onMove(e: PointerEvent) {
+			const width = Math.min(CARD_WIDTH_MAX, Math.max(CARD_WIDTH_MIN, origin.width + (e.clientX - startX)));
+			floatPositions = { ...floatPositions, [slot.key]: { ...origin, width } };
+		}
+		function onUp() {
+			window.removeEventListener('pointermove', onMove);
+			window.removeEventListener('pointerup', onUp);
+			window.removeEventListener('pointercancel', onUp);
+			activeResizeKey = null;
+
+			const final = floatPositions[slot.key];
+			if (final) {
+				setFloatPosition(slot.key, final);
+				repackSpanningCellsFor(slot, final.width);
+			}
+		}
+		window.addEventListener('pointermove', onMove);
+		window.addEventListener('pointerup', onUp);
+		window.addEventListener('pointercancel', onUp);
+	}
+
+	// The intra-card grid gap (Tailwind `gap-2.5`) — needed alongside the
+	// grid's own measured width to convert a column-divider drag's pixel
+	// delta into a proportional `fr` delta.
+	const GRID_GAP_PX = 10;
+	const MIN_COL_FR_SHARE = 0.15;
+
+	let gridEls: Record<string, HTMLDivElement> = {};
+	// Column widths currently being live-dragged (see startColumnResize) —
+	// kept separate from the persisted group.colFr so every other card's
+	// render is untouched while one column divider is mid-drag.
+	let resizingColFr = $state<{ slotKey: string; fr: number[] } | null>(null);
+
+	// Drags the divider between column `colIndex - 1` and `colIndex` inside
+	// a merged card, redistributing width between just that adjacent pair
+	// (keeping their combined fr — and everyone else's — unchanged) rather
+	// than resizing the whole card.
+	function startColumnResize(event: PointerEvent, slot: Slot, colIndex: number) {
+		if (!dragEnabled || !slot.group) return;
+		event.preventDefault();
+		event.stopPropagation();
+
+		const group = slot.group;
+		const dims = gridDimensions(group);
+		const startFr = resolveColFr(group, dims.cols).slice();
+		const gridRect = gridEls[slot.key]?.getBoundingClientRect();
+		if (!gridRect) return;
+
+		const availablePx = gridRect.width - GRID_GAP_PX * (dims.cols - 1);
+		const frTotal = startFr.reduce((a, b) => a + b, 0);
+		const pairTotal = startFr[colIndex - 1] + startFr[colIndex];
+		const minFr = frTotal * MIN_COL_FR_SHARE;
+		const startX = event.clientX;
+
+		function onMove(e: PointerEvent) {
+			const deltaFr = ((e.clientX - startX) / availablePx) * frTotal;
+			let left = startFr[colIndex - 1] + deltaFr;
+			let right = pairTotal - left;
+			if (left < minFr) {
+				left = minFr;
+				right = pairTotal - minFr;
+			} else if (right < minFr) {
+				right = minFr;
+				left = pairTotal - minFr;
+			}
+			const next = startFr.slice();
+			next[colIndex - 1] = left;
+			next[colIndex] = right;
+			resizingColFr = { slotKey: slot.key, fr: next };
+		}
+		function onUp() {
+			window.removeEventListener('pointermove', onMove);
+			window.removeEventListener('pointerup', onUp);
+			window.removeEventListener('pointercancel', onUp);
+
+			if (resizingColFr && resizingColFr.slotKey === slot.key) {
+				const nextGroup = setColFr(group, resizingColFr.fr);
+				const nextGroups = [...groups.filter((g) => g !== group), nextGroup];
+				groups = nextGroups;
+				setWidgetGroups(nextGroups);
+			}
+			resizingColFr = null;
+		}
+		window.addEventListener('pointermove', onMove);
+		window.addEventListener('pointerup', onUp);
+		window.addEventListener('pointercancel', onUp);
+	}
+
+	// Hiding/showing a slot bundles all its member ids together — there's
+	// only one hide control on a merged card's shared header.
+	function hideSlot(slot: Slot) {
+		const next = new Set(hiddenIds);
+		slot.ids.forEach((id) => next.add(id));
+		hiddenIds = next;
+		setHiddenWidgetIds([...next]);
+	}
+
+	function unhideSlot(slot: Slot) {
+		const next = new Set(hiddenIds);
+		slot.ids.forEach((id) => next.delete(id));
+		hiddenIds = next;
+		setHiddenWidgetIds([...next]);
+	}
+
+	// Pulls one widget back out of a merged card into its own standalone
+	// card, landing just offset from where the merged card was (so it's
+	// visible as a separate card rather than exactly overlapping). The
+	// remainder keeps the merged card's old spot and old grid — the
+	// vacated cell just stays empty rather than the remaining cells
+	// re-stretching to fill it (matches the spec's unlink behavior).
+	function unlinkWidget(id: WidgetId) {
+		const group = groups.find((g) => g.cells.some((c) => c.id === id));
+		if (!group) return;
+		const mergedSlot = slots.find((s) => s.ids.includes(id));
+		const basePos = mergedSlot ? currentPositionFor(mergedSlot) : defaultPosition(id);
+		const oldKey = mergedSlot?.key;
+
+		const remaining = removeCell(group, id);
+		const nextGroups = groups.filter((g) => g !== group);
+		if (remaining.cells.length > 1) nextGroups.push(remaining);
+		groups = nextGroups;
+		setWidgetGroups(nextGroups);
+
+		const nextFloat = { ...floatPositions };
+		if (oldKey) {
+			delete nextFloat[oldKey];
+			clearFloatPosition(oldKey);
+		}
+
+		const unlinkedPos: FloatPosition = { x: basePos.x + 24, y: basePos.y + 24, width: CARD_WIDTH_NARROW };
+		nextFloat[id] = unlinkedPos;
+		setFloatPosition(id, unlinkedPos);
+
+		const remainderKey = remaining.cells.length > 1 ? groupKey(remaining) : remaining.cells[0]?.id;
+		if (remainderKey) {
+			nextFloat[remainderKey] = basePos;
+			setFloatPosition(remainderKey, basePos);
+		}
+
+		floatPositions = nextFloat;
+	}
+
+	// Docks the dragged slot onto a specific edge of a specific cell inside
+	// the target slot — this is the grid-aware replacement for the old
+	// "drop anywhere on the target card" merge. Any prior group membership
+	// for the dragged slot's ids is dissolved first, so docking a widget
+	// that was already linked elsewhere moves it rather than doubling it up.
+	// A multi-widget source (itself already a merged card) has each of its
+	// ids inserted at the same edge in turn, so the whole card comes along.
+	function mergeAtEdge(source: Slot, targetCellId: WidgetId, edge: DockEdge) {
+		const targetSlot = slots.find((s) => s.ids.includes(targetCellId));
+		if (!targetSlot || targetSlot.key === source.key) return;
+		const targetPos = currentPositionFor(targetSlot);
+
+		const involved = new Set(source.ids);
+		const remainingGroups = groups.filter((g) => !g.cells.some((c) => involved.has(c.id)) && g !== targetSlot.group);
+
+		let nextGroup: WidgetGroup<WidgetId> =
+			targetSlot.group ?? { cells: [{ id: targetCellId, row: 0, col: 0, rowSpan: 1, colSpan: 1 }] };
+		for (const id of source.ids) {
+			nextGroup = insertCell(nextGroup, targetCellId, edge, id);
+		}
+
+		const nextGroups = [...remainingGroups, nextGroup];
+		groups = nextGroups;
+		setWidgetGroups(nextGroups);
+
+		// A merged card needs roughly one narrow column's worth of width per
+		// column in the resulting grid — reusing the target's old width
+		// would cram a wide row into a sliver.
+		const dims = gridDimensions(nextGroup);
+		const mergedWidth = dims.cols * CARD_WIDTH_NARROW + (dims.cols - 1) * CARD_GAP;
+		const mergedPos: FloatPosition = { ...targetPos, width: Math.max(targetPos.width, mergedWidth) };
+
+		const mergedKey = groupKey(nextGroup);
+		const nextFloat = { ...floatPositions };
+		delete nextFloat[source.key];
+		delete nextFloat[targetSlot.key];
+		nextFloat[mergedKey] = mergedPos;
+		floatPositions = nextFloat;
+		clearFloatPosition(source.key);
+		clearFloatPosition(targetSlot.key);
+		setFloatPosition(mergedKey, mergedPos);
+	}
+
+	// Single pointer-based gesture drives both freeform positioning and
+	// merging — native HTML5 drag-and-drop (the previous approach)
+	// unreliably lost the drag whenever it started over a link, button, or
+	// text input inside a widget (the browser hijacks it into a link/text
+	// drag instead). Grabbing the grip now always works the same way
+	// regardless of what's under the cursor: the card follows the pointer
+	// (activeDragKey drives the "lifted" look below); release it over
+	// another card to merge the two into one combined card; release
+	// anywhere else and it just stays at the drop point.
+	let activeDragKey = $state<string | null>(null);
+
+	// document.elementFromPoint would otherwise always hit the dragged card
+	// itself (it's rendered right under the cursor) — hiding it from
 	// hit-testing for the duration of the lookup reveals whatever's beneath.
-	// Its held-open placeholder (see template) carries the same
-	// data-widget-id and is excluded too — the placeholder exists purely to
-	// keep the grid from compacting mid-drag, not to act as a "drop here to
-	// go home" target. Treating a placeholder hit as a real target made it
-	// too easy to trigger by accident: the placeholder is exactly as big as
-	// the widget's original cell, so any drag that hadn't yet fully cleared
-	// that box — including a short nudge toward the very next slot — would
-	// snap back to "original position" instead of reaching the neighbor.
-	function widgetIdUnderPoint(x: number, y: number, excludeId: WidgetId): WidgetId | null {
-		const excludeEl = widgetEls[excludeId];
+	// Resolves down to the specific sub-widget cell (not just the shared
+	// container) so dock-zone detection can test against that cell's own
+	// edges — the same cell can be tested whether it's a standalone card or
+	// one member of an already-merged one.
+	function dockTargetUnderPoint(
+		x: number,
+		y: number,
+		excludeKey: string
+	): { cellId: WidgetId; edge: DockEdge } | null {
+		const excludeEl = widgetEls[excludeKey];
 		const prevPointerEvents = excludeEl?.style.pointerEvents;
 		if (excludeEl) excludeEl.style.pointerEvents = 'none';
-		const hit = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-widget-id]');
+		const hit = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-cell-id]');
 		if (excludeEl) excludeEl.style.pointerEvents = prevPointerEvents ?? '';
-		const hitId = hit?.dataset.widgetId as WidgetId | undefined;
-		return hitId && hitId !== excludeId ? hitId : null;
+
+		const cellId = hit?.dataset.cellId as WidgetId | undefined;
+		if (!cellId || slots.find((s) => s.ids.includes(cellId))?.key === excludeKey) return null;
+
+		const rect = (cellEls[cellId] ?? hit)?.getBoundingClientRect();
+		if (!rect) return null;
+		const edge = edgeDockTarget(rect, x, y);
+		return edge ? { cellId, edge } : null;
 	}
 
-	function startDrag(event: PointerEvent, id: WidgetId) {
+	function startDrag(event: PointerEvent, slot: Slot) {
+		if (!dragEnabled) return;
 		event.preventDefault();
-		const el = widgetEls[id];
-		if (!el) return;
 
-		const existing = floatPositions[id];
-		const rect = el.getBoundingClientRect();
-		const origin = existing ?? { x: rect.left, y: rect.top, width: rect.width };
-		floatPositions = { ...floatPositions, [id]: origin };
-		activeDragId = id;
-		dragPlaceholderHeight = rect.height;
+		const origin = currentPositionFor(slot);
+		const hadPosition = !!floatPositions[slot.key];
+		floatPositions = { ...floatPositions, [slot.key]: origin };
+		activeDragKey = slot.key;
 
 		const startX = event.clientX;
 		const startY = event.clientY;
@@ -494,49 +1192,33 @@
 			moved = true;
 			floatPositions = {
 				...floatPositions,
-				[id]: { x: origin.x + (e.clientX - startX), y: origin.y + (e.clientY - startY), width: origin.width }
+				[slot.key]: {
+					x: origin.x + (e.clientX - startX),
+					y: origin.y + (e.clientY - startY),
+					width: origin.width
+				}
 			};
-			dragOverId = widgetIdUnderPoint(e.clientX, e.clientY, id);
+			dragOverEdge = dockTargetUnderPoint(e.clientX, e.clientY, slot.key);
 		}
 		function onUp() {
 			window.removeEventListener('pointermove', onMove);
 			window.removeEventListener('pointerup', onUp);
 			window.removeEventListener('pointercancel', onUp);
-			activeDragId = null;
-			dragPlaceholderHeight = null;
+			activeDragKey = null;
 
-			const targetId = dragOverId;
-			dragOverId = null;
+			const target = dragOverEdge;
+			dragOverEdge = null;
 
-			if (moved && targetId) {
-				// Dropped on another widget — reorder into its slot and dock
-				// back into the grid rather than staying floated. Which side of
-				// the target to land on depends on drag direction: moving
-				// forward (e.g. the middle widget dropped onto its right
-				// neighbor) has to insert *after* the target, or removing the
-				// dragged widget first shifts the target back into the exact
-				// slot the drag was trying to leave — "insert before" alone
-				// makes forward drags onto an adjacent widget silently no-op.
-				const wasBefore = widgetOrder.indexOf(id) < widgetOrder.indexOf(targetId);
-				const next = { ...floatPositions };
-				delete next[id];
-				floatPositions = next;
-				clearFloatPosition(id);
-
-				const nextOrder = widgetOrder.filter((w) => w !== id);
-				const targetIndex = nextOrder.indexOf(targetId);
-				nextOrder.splice(wasBefore ? targetIndex + 1 : targetIndex, 0, id);
-				widgetOrder = nextOrder;
-				setWidgetOrder(nextOrder);
+			if (moved && target) {
+				mergeAtEdge(slot, target.cellId, target.edge);
 			} else if (moved) {
-				// Dropped on open space — stays floating at the drop point.
-				const final = floatPositions[id];
-				if (final) setFloatPosition(id, final);
-			} else if (!existing) {
-				// Just a click, not a drag — undo the provisional float we
+				const final = floatPositions[slot.key];
+				if (final) setFloatPosition(slot.key, final);
+			} else if (!hadPosition) {
+				// Just a click, not a drag — undo the provisional position we
 				// set at the start so a plain click on the grip is a no-op.
 				const reverted = { ...floatPositions };
-				delete reverted[id];
+				delete reverted[slot.key];
 				floatPositions = reverted;
 			}
 		}
@@ -549,40 +1231,34 @@
 		window.addEventListener('pointercancel', onUp);
 	}
 
-	// Double-clicking a grip handle docks that widget back into its grid
-	// slot — a quick escape hatch alongside dragging it back over another
-	// widget (also cleared in bulk by "Reset widget layout").
-	function dockWidget(id: WidgetId) {
+	// Double-clicking a grip handle resets that card back to its
+	// algorithmic default position/width — a quick escape hatch alongside
+	// dragging it back manually (also cleared in bulk by "Reset layout").
+	function resetSlotPosition(slot: Slot) {
 		const next = { ...floatPositions };
-		delete next[id];
+		delete next[slot.key];
 		floatPositions = next;
-		clearFloatPosition(id);
+		clearFloatPosition(slot.key);
 	}
 
 	function resetLayout() {
 		resetAllFloatPositions();
-		resetWidgetOrder();
-		resetFullWidth();
+		resetHiddenWidgets();
+		resetWidgetGroups();
 		floatPositions = {};
-		widgetOrder = [...WIDGET_IDS];
-		fullWidthIds = new Set(DEFAULT_FULL_WIDTH_IDS);
+		hiddenIds = new Set();
+		groups = [];
 	}
 
-	function widgetClass(id: WidgetId): string {
-		const base = 'rounded-xl border border-transparent p-3 transition-all';
-		if (floatPositions[id]) {
-			const lifted = activeDragId === id ? ' scale-105 opacity-90' : '';
-			return `glass floating-widget rounded-2xl p-4${lifted}`;
-		}
-		const span = fullWidthIds.has(id) ? ' sm:col-span-3' : '';
-		if (dragOverId === id) return `${base} border-primary bg-primary/10 ring-2 ring-primary/50${span}`;
-		return `${base}${span}`;
+	function widgetClass(slot: Slot): string {
+		const lifted = activeDragKey === slot.key || activeResizeKey === slot.key ? ' scale-105 opacity-90' : '';
+		return `glass floating-widget rounded-2xl p-4${lifted}`;
 	}
 
-	function widgetStyle(id: WidgetId): string {
-		const pos = floatPositions[id];
-		if (pos) return `position:fixed; left:${pos.x}px; top:${pos.y}px; width:${pos.width}px; z-index:15; pointer-events:${activeDragId === id ? 'none' : 'auto'};`;
-		return `order:${widgetOrder.indexOf(id)};`;
+	function widgetStyle(slot: Slot): string {
+		const pos = floatPositions[slot.key] ?? defaultPosition(slot.key);
+		const lifted = activeDragKey === slot.key || activeResizeKey === slot.key;
+		return `position:fixed; left:${pos.x}px; top:${pos.y}px; width:${pos.width}px; z-index:${lifted ? 20 : 10}; pointer-events:${activeDragKey === slot.key ? 'none' : 'auto'};`;
 	}
 </script>
 
@@ -653,7 +1329,18 @@
 {/if}
 
 <div class="fixed top-4 right-4 z-20 flex gap-2">
-	{#if Object.keys(floatPositions).length || !setsEqual(fullWidthIds, DEFAULT_FULL_WIDTH_IDS) || widgetOrder.some((id, i) => id !== WIDGET_IDS[i])}
+	{#if !dragEnabled}
+		<button
+			type="button"
+			onclick={() => (dragEnabled = true)}
+			title="Widget dragging is locked — click or press Alt+L to unlock"
+			aria-label="Unlock widget dragging"
+			class="glass glass--interactive grid h-9 w-9 place-items-center rounded-full text-primary"
+		>
+			<Lock size={16} aria-hidden="true" />
+		</button>
+	{/if}
+	{#if Object.keys(floatPositions).length || hiddenIds.size || groups.length}
 		<button
 			type="button"
 			onclick={resetLayout}
@@ -671,22 +1358,20 @@
 	>
 		<Plus size={16} aria-hidden="true" />
 	</button>
-	{#if data.unsplashConfigured}
-		<button
-			type="button"
-			onclick={() => (settingsOpen = !settingsOpen)}
-			aria-label="Background settings"
-			class="glass glass--interactive grid h-9 w-9 place-items-center rounded-full text-white/70 hover:text-primary"
-		>
-			<Settings size={16} aria-hidden="true" />
-		</button>
-	{/if}
+	<button
+		type="button"
+		onclick={() => (settingsOpen = !settingsOpen)}
+		aria-label="Dashboard settings"
+		class="glass glass--interactive grid h-9 w-9 place-items-center rounded-full text-white/70 hover:text-primary"
+	>
+		<Settings size={16} aria-hidden="true" />
+	</button>
 </div>
 
 {#if settingsOpen}
 	<div class="glass fixed top-16 right-4 z-20 w-72 rounded-2xl p-4">
 		<div class="flex items-center justify-between">
-			<h2 class="text-xs font-medium tracking-wide text-white/50 uppercase">Background</h2>
+			<h2 class="text-xs font-medium tracking-wide text-white/50 uppercase">Dashboard settings</h2>
 			<button
 				type="button"
 				onclick={() => (settingsOpen = false)}
@@ -696,10 +1381,41 @@
 				<X size={14} aria-hidden="true" />
 			</button>
 		</div>
+
+		{#if data.unsplashConfigured}
+			<form
+				method="POST"
+				action="?/updateBackground"
+				class="mt-3"
+				use:enhance={() => {
+					return async ({ update }) => {
+						await update();
+						settingsOpen = false;
+					};
+				}}
+			>
+				<label class="block text-xs text-white/50" for="unsplash-query">Photo search terms</label>
+				<input
+					id="unsplash-query"
+					name="query"
+					type="text"
+					bind:value={queryInput}
+					placeholder="cinematic mountains"
+					class="glass mt-1.5 w-full rounded-lg px-3 py-2 text-sm text-white placeholder-white/40 outline-none focus:border-primary/60"
+				/>
+				<button
+					type="submit"
+					class="mt-3 w-full rounded-lg bg-primary/90 py-2 text-sm font-medium text-black transition-colors hover:bg-primary"
+				>
+					Save
+				</button>
+			</form>
+		{/if}
+
 		<form
 			method="POST"
-			action="?/updateBackground"
-			class="mt-3"
+			action="?/updateIcsUrl"
+			class="mt-3 {data.unsplashConfigured ? 'border-t border-white/10 pt-3' : ''}"
 			use:enhance={() => {
 				return async ({ update }) => {
 					await update();
@@ -707,13 +1423,13 @@
 				};
 			}}
 		>
-			<label class="block text-xs text-white/50" for="unsplash-query">Photo search terms</label>
+			<label class="block text-xs text-white/50" for="ics-url">Calendar feed (.ics URL)</label>
 			<input
-				id="unsplash-query"
-				name="query"
+				id="ics-url"
+				name="icsUrl"
 				type="text"
-				bind:value={queryInput}
-				placeholder="cinematic mountains"
+				bind:value={icsUrlInput}
+				placeholder="https://calendar.google.com/…/basic.ics"
 				class="glass mt-1.5 w-full rounded-lg px-3 py-2 text-sm text-white placeholder-white/40 outline-none focus:border-primary/60"
 			/>
 			<button
@@ -723,6 +1439,41 @@
 				Save
 			</button>
 		</form>
+
+		{#if favoritedPhotos.length}
+			<div class="mt-4 border-t border-white/10 pt-3">
+				<h3 class="text-xs font-medium tracking-wide text-white/50 uppercase">Favorites</h3>
+				<div class="mt-2 grid grid-cols-4 gap-1.5">
+					{#each favoritedPhotos as photo (photo.id)}
+						<form
+							method="POST"
+							action="?/selectPhoto"
+							use:enhance={() => {
+								return async ({ result }) => {
+									if (result.type === 'success' && result.data?.photo) {
+										currentPhoto = result.data.photo as typeof currentPhoto;
+										favoritedOverride = null;
+									}
+								};
+							}}
+						>
+							<input type="hidden" name="id" value={photo.id} />
+							<button
+								type="submit"
+								title="Use this photo as the background"
+								aria-label="Use photo by {photo.photographerName} as background"
+								class="aspect-square w-full overflow-hidden rounded-lg border transition-colors {currentPhoto?.url ===
+								photo.url
+									? 'border-primary'
+									: 'border-white/10 hover:border-primary/50'}"
+							>
+								<img src={photo.url} alt="" class="h-full w-full object-cover" />
+							</button>
+						</form>
+					{/each}
+				</div>
+			</div>
+		{/if}
 	</div>
 {/if}
 
@@ -734,14 +1485,17 @@
 		<p class="mt-2 text-lg text-white/80">{greeting}.</p>
 	</div>
 
-	<form class="mx-auto mt-6 w-full max-w-lg" onsubmit={submitSearch}>
+	<form class="relative mx-auto mt-6 w-full max-w-lg" onsubmit={submitSearch}>
 		<label class="relative block">
 			<input
 				bind:this={searchInputEl}
 				type="search"
 				bind:value={query}
 				autofocus
-				placeholder="Search or paste a link… (try !d, !yt, !gh, !w)"
+				onfocus={() => (searchFocused = true)}
+				onblur={handleSearchBlur}
+				onkeydown={handleSearchKeydown}
+				placeholder="Search or paste a link… (try ! for bangs)"
 				class="glass w-full rounded-full py-3 pr-4 pl-10 text-sm text-white placeholder-white/40 outline-none focus:border-primary/60"
 			/>
 			<Search
@@ -750,21 +1504,63 @@
 				class="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-white/50"
 			/>
 		</label>
-	</form>
 
-	{#if data.recentSearches.length}
-		<div class="mx-auto mt-2 flex max-w-lg flex-wrap justify-center gap-1.5">
-			{#each data.recentSearches as recent}
-				<button
-					type="button"
-					onclick={() => runSearch(recent)}
-					class="rounded-full px-2.5 py-1 text-xs text-white/55 transition-colors hover:text-primary"
-				>
-					{recent}
-				</button>
-			{/each}
-		</div>
-	{/if}
+		{#if dropdownOpen}
+			<ul class="glass absolute inset-x-0 top-full z-30 mt-2 max-h-72 overflow-y-auto rounded-2xl p-1.5">
+				{#each suggestions as suggestion, i (suggestion.kind === 'search'
+					? `s:${suggestion.value}`
+					: suggestion.kind === 'link'
+						? `l:${suggestion.id}`
+						: suggestion.kind === 'calc'
+							? `c:${suggestion.expression}`
+							: `b:${suggestion.trigger}`)}
+					<li class="flex items-center">
+						<button
+							type="button"
+							onmousedown={(e) => e.preventDefault()}
+							onclick={() => chooseSuggestion(suggestion)}
+							class="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors {i ===
+							selectedIndex
+								? 'bg-primary/15 text-primary'
+								: 'text-white/80 hover:bg-white/5'}"
+						>
+							{#if suggestion.kind === 'search'}
+								<Search size={13} aria-hidden="true" class="flex-shrink-0 text-white/40" />
+								<span class="truncate">{suggestion.value}</span>
+							{:else if suggestion.kind === 'link'}
+								<Link2 size={13} aria-hidden="true" class="flex-shrink-0 text-white/40" />
+								<span class="truncate">{suggestion.label}</span>
+								<span class="ml-auto flex-shrink-0 text-[10px] tracking-wide text-white/35 uppercase">Quick link</span>
+							{:else if suggestion.kind === 'calc'}
+								<span class="truncate font-medium">{suggestion.expression} = {formatCalcValue(suggestion.value)}</span>
+								<span class="ml-auto flex-shrink-0 text-[10px] tracking-wide text-white/35 uppercase">
+									{calcCopied && i === selectedIndex ? 'Copied ✓' : 'Copy'}
+								</span>
+							{:else}
+								<span
+									class="flex-shrink-0 rounded border border-white/15 px-1 text-[10px] tracking-wide text-white/50 uppercase"
+								>
+									{suggestion.trigger}
+								</span>
+								<span class="truncate">{suggestion.label}</span>
+							{/if}
+						</button>
+						{#if suggestion.kind === 'search'}
+							<button
+								type="button"
+								onmousedown={(e) => e.preventDefault()}
+								onclick={() => removeSearchSuggestion(suggestion.value)}
+								aria-label="Remove '{suggestion.value}' from recent searches"
+								class="flex-shrink-0 px-2 py-2 text-white/30 hover:text-primary"
+							>
+								<X size={12} aria-hidden="true" />
+							</button>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</form>
 
 	<nav class="mx-auto mt-6 flex flex-wrap justify-center gap-2">
 		{#each dashboardLinks as link}
@@ -808,217 +1604,424 @@
 		</div>
 	{/if}
 
-	<section class="glass-card mt-6 rounded-2xl p-5">
-		<div class="grid gap-3 sm:grid-cols-3">
-			{#each WIDGET_IDS as id (id)}
-				{@const meta = WIDGET_META[id]}
-				{@const Icon = meta.icon}
-				{#if id !== 'right-now' || data.statusItems.length}
-					{#if id !== 'watching' || data.watching.length}
-						{#if activeDragId === id}
-							<!-- Holds the widget's grid slot open for the duration of the
-							     drag so neighbors don't compact into it — without this,
-							     the moment a widget lifts off there'd be nowhere left to
-							     drop it back into. Purely a layout spacer, not a drop
-							     target itself (see widgetIdUnderPoint above) — it's exactly
-							     as big as the widget's original cell, so treating it as
-							     "drop here to go home" made short nudges toward the very
-							     next slot snap back instead of landing there. -->
-							<div
-								data-widget-id={id}
-								aria-hidden="true"
-								class="rounded-xl border-2 border-dashed border-white/15 {fullWidthIds.has(id)
-									? 'sm:col-span-3'
-									: ''}"
-								style="order:{widgetOrder.indexOf(id)}; height:{dragPlaceholderHeight ?? 0}px;"
-							></div>
-						{/if}
-						<div
-							bind:this={widgetEls[id]}
-							data-widget-id={id}
-							class={widgetClass(id)}
-							style={widgetStyle(id)}
-							role="group"
-							aria-label="{meta.label} widget"
-						>
-							<div class="flex items-center justify-between gap-2">
-								<h2 class="flex items-center gap-1.5 text-xs font-medium tracking-wide text-white/60 uppercase">
-									{#if Icon}
-										<Icon size={13} aria-hidden="true" />
-									{/if}
-									{meta.label}
-									{#if id === 'now-playing' || id === 'discord'}
-										<span class="relative flex h-1.5 w-1.5" title="Live" aria-hidden="true">
-											<span class="absolute h-full w-full animate-ping rounded-full bg-primary opacity-75"></span>
-											<span class="h-1.5 w-1.5 rounded-full bg-primary"></span>
-										</span>
-									{/if}
-								</h2>
-								<div class="flex items-center gap-1.5">
-									{#if !floatPositions[id]}
-										<button
-											type="button"
-											onclick={() => toggleFullWidth(id)}
-											title={fullWidthIds.has(id) ? 'Shrink to one column' : 'Stretch to full width'}
-											aria-label={fullWidthIds.has(id)
-												? `Shrink ${meta.label} widget`
-												: `Stretch ${meta.label} widget to full width`}
-											class="hover:text-primary {fullWidthIds.has(id) ? 'text-primary' : 'text-white/30'}"
-										>
-											<StretchHorizontal size={12} aria-hidden="true" />
-										</button>
-									{/if}
-									<button
-										type="button"
-										class="cursor-grab touch-none text-white/30 hover:text-primary active:cursor-grabbing"
-										onpointerdown={(e) => startDrag(e, id)}
-										ondblclick={() => dockWidget(id)}
-										title="Drag onto another widget to reorder, or onto open space to float. Double-click to dock."
-										aria-label="Move {meta.label} widget"
-									>
-										<GripVertical size={12} aria-hidden="true" />
-									</button>
-								</div>
-							</div>
+	<!-- Marks where the centered header block actually ends, so the
+	     floating-card canvas can start below it regardless of viewport
+	     height/content (see canvasAnchorEl / canvasTop above). -->
+	<div bind:this={canvasAnchorEl} aria-hidden="true"></div>
 
-							<div class="mt-2.5">
-								{#if id === 'right-now'}
-									<ul class="grid gap-1">
-										{#each data.statusItems as item}
-											<li class="text-sm text-white/80">{item}</li>
-										{/each}
-									</ul>
-								{:else if id === 'now-playing'}
-									<ListeningNowCard bare>
-										{#snippet fallback()}
-											<p class="text-sm text-white/60">Nothing playing right now.</p>
-										{/snippet}
-									</ListeningNowCard>
-								{:else if id === 'discord'}
-									<DiscordPresence activityOnly />
-								{:else if id === 'recent-notes'}
-									{#if data.recentNotes.length}
-										<ul class="grid gap-1.5">
-											{#each data.recentNotes as note}
-												<li>
-													<a
-														href="/notes/{note.id}"
-														class="group flex items-center gap-2 text-sm text-white/80 hover:text-primary"
-													>
-														<span
-															class="grid h-6 w-6 flex-shrink-0 place-items-center rounded bg-white/5 text-white/40 group-hover:text-primary"
-														>
-															<ScrollText size={12} aria-hidden="true" />
-														</span>
-														<span class="truncate">{note.title}</span>
-													</a>
-												</li>
-											{/each}
-										</ul>
-									{:else}
-										<p class="text-sm text-white/60">No notes yet.</p>
-									{/if}
-								{:else if id === 'watching'}
-									<ul class="grid gap-2">
-										{#each data.watching.slice(0, 2) as item}
-											<li>
-												<a href={item.href} target="_blank" rel="noopener noreferrer" class="group flex items-center gap-2">
-													{#if item.posterUrl}
-														<img src={item.posterUrl} alt="" class="h-9 w-6 flex-shrink-0 rounded object-cover" />
-													{/if}
-													<span class="min-w-0">
-														<span class="block truncate text-sm text-white/80 group-hover:text-primary">{item.title}</span>
-														{#if item.nextToWatch}
-															<span class="block text-xs text-white/60">Next: {item.nextToWatch}</span>
-														{/if}
-													</span>
-												</a>
-											</li>
-										{/each}
-									</ul>
-								{:else if id === 'weather'}
-									{#if weather === null}
-										<p class="text-sm text-white/60">Checking…</p>
-									{:else if weather === 'denied'}
-										<p class="text-sm text-white/60">Location access denied.</p>
-									{:else if weather === 'timeout' || weather === 'unavailable' || weather === 'error'}
-										<p class="text-sm text-white/60">
-											{weather === 'timeout' ? 'Location lookup timed out.' : 'Weather unavailable.'}
-										</p>
+	{#snippet widgetBody(id: WidgetId)}
+		{#if id === 'right-now'}
+			<ul class="grid gap-1">
+				{#each data.statusItems as item}
+					<li class="text-sm text-white/80">{item}</li>
+				{/each}
+			</ul>
+		{:else if id === 'now-playing'}
+			<ListeningNowCard bare>
+				{#snippet fallback()}
+					<p class="text-sm text-white/60">Nothing playing right now.</p>
+				{/snippet}
+			</ListeningNowCard>
+		{:else if id === 'discord'}
+			<DiscordPresence activityOnly />
+		{:else if id === 'recent-notes'}
+			{#if data.recentNotes.length}
+				<ul class="grid gap-1.5">
+					{#each data.recentNotes as note}
+						<li>
+							<a href="/notes/{note.id}" class="group flex items-center gap-2 text-sm text-white/80 hover:text-primary">
+								<span
+									class="grid h-6 w-6 flex-shrink-0 place-items-center rounded bg-white/5 text-white/40 group-hover:text-primary"
+								>
+									<ScrollText size={12} aria-hidden="true" />
+								</span>
+								<span class="truncate">{note.title}</span>
+							</a>
+						</li>
+					{/each}
+				</ul>
+			{:else}
+				<p class="text-sm text-white/60">No notes yet.</p>
+			{/if}
+		{:else if id === 'watching'}
+			<ul class="grid gap-2">
+				{#each data.watching.slice(0, 2) as item}
+					<li>
+						<a href={item.href} target="_blank" rel="noopener noreferrer" class="group flex items-center gap-2">
+							{#if item.posterUrl}
+								<img src={item.posterUrl} alt="" class="h-9 w-6 flex-shrink-0 rounded object-cover" />
+							{/if}
+							<span class="min-w-0">
+								<span class="block truncate text-sm text-white/80 group-hover:text-primary">{item.title}</span>
+								{#if item.nextToWatch}
+									<span class="block text-xs text-white/60">Next: {item.nextToWatch}</span>
+								{/if}
+							</span>
+						</a>
+					</li>
+				{/each}
+			</ul>
+		{:else if id === 'weather'}
+			{#if weather === null}
+				<p class="text-sm text-white/60">Checking…</p>
+			{:else if weather === 'denied'}
+				<p class="text-sm text-white/60">Location access denied.</p>
+			{:else if weather === 'timeout' || weather === 'unavailable' || weather === 'error'}
+				<p class="text-sm text-white/60">
+					{weather === 'timeout' ? 'Location lookup timed out.' : 'Weather unavailable.'}
+				</p>
+				<button type="button" onclick={loadWeather} class="mt-1.5 text-xs text-white/60 underline hover:text-primary">
+					Retry
+				</button>
+			{:else}
+				<p class="text-xl font-semibold text-white">{weather.tempF}°F</p>
+				<p class="text-sm text-white/60">{weatherLabel(weather.code)}</p>
+			{/if}
+		{:else if id === 'focus'}
+			<p class="text-xl font-semibold text-white tabular-nums">{pomodoroTimeString}</p>
+			<p class="text-xs text-white/60">
+				{pomodoroOnBreak ? 'Break' : 'Focus'} · {data.focusStats.sessionsToday} session{data.focusStats
+					.sessionsToday === 1
+					? ''
+					: 's'} today
+			</p>
+			<div class="mt-2 flex gap-2">
+				<button
+					type="button"
+					onclick={togglePomodoro}
+					class="rounded-lg border border-white/15 px-2.5 py-1 text-xs text-white/80 transition-colors hover:border-primary/50 hover:text-primary"
+				>
+					{pomodoroRunning ? 'Pause' : 'Start'}
+				</button>
+				<button
+					type="button"
+					onclick={resetPomodoro}
+					class="rounded-lg border border-white/15 px-2.5 py-1 text-xs text-white/80 transition-colors hover:border-primary/50 hover:text-primary"
+				>
+					Reset
+				</button>
+			</div>
+			<div class="mt-2.5 flex items-end gap-1" title="Focus minutes, last 7 days">
+				{#each data.focusWeekly.days as day (day.date)}
+					{@const height = Math.min(24, 4 + day.minutes / 4)}
+					<div
+						class="w-2.5 rounded-sm {day.minutes > 0 ? 'bg-primary/70' : 'bg-white/10'}"
+						style="height: {height}px;"
+						title="{day.date}: {day.minutes} min"
+					></div>
+				{/each}
+				{#if data.focusWeekly.streak > 1}
+					<span class="ml-1.5 text-xs text-white/60">🔥 {data.focusWeekly.streak}-day streak</span>
+				{/if}
+			</div>
+		{:else if id === 'todo'}
+			{#if displayedTodoItems.length}
+				<ul class="grid gap-1.5">
+					{#each displayedTodoItems as item (item.id)}
+						<li class="flex items-center gap-2">
+							<form method="POST" action="?/toggleTodo" use:enhance>
+								<input type="hidden" name="id" value={item.id} />
+								<button
+									type="submit"
+									role="checkbox"
+									aria-checked={item.done}
+									aria-label={item.done ? 'Mark incomplete' : 'Mark complete'}
+									class="grid h-4 w-4 flex-shrink-0 place-items-center rounded border {item.done
+										? 'border-primary bg-primary/80'
+										: 'border-white/30'}"
+								></button>
+							</form>
+							<span
+								class="min-w-0 flex-1 truncate text-sm {item.done ? 'text-white/40 line-through' : 'text-white/80'}"
+							>
+								{item.body}
+							</span>
+							<form method="POST" action="?/removeTodo" use:enhance>
+								<input type="hidden" name="id" value={item.id} />
+								<button type="submit" aria-label="Remove to-do" class="flex-shrink-0 text-white/30 hover:text-primary">
+									<Trash2 size={12} aria-hidden="true" />
+								</button>
+							</form>
+						</li>
+					{/each}
+				</ul>
+			{:else}
+				<p class="text-sm text-white/60">Nothing to do.</p>
+			{/if}
+			<form
+				method="POST"
+				action="?/addTodo"
+				class="mt-2 flex items-center gap-2"
+				use:enhance={() => {
+					return async ({ update }) => {
+						await update({ reset: false });
+						todoBody = '';
+					};
+				}}
+			>
+				<input
+					name="body"
+					type="text"
+					bind:value={todoBody}
+					placeholder="Add a to-do…"
+					class="glass min-w-0 flex-1 rounded-lg px-3 py-1.5 text-sm text-white placeholder-white/40 outline-none focus:border-primary/60"
+				/>
+				<button
+					type="submit"
+					class="flex-shrink-0 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-white/80 transition-colors hover:border-primary/50 hover:text-primary"
+				>
+					Add
+				</button>
+			</form>
+		{:else if id === 'agenda'}
+			<ul class="grid gap-1.5">
+				{#each data.agenda as event}
+					<li class="text-sm text-white/80">
+						<span class="text-white/50">{agendaLabel(event.start, event.allDay)}</span>
+						— {event.summary}
+					</li>
+				{/each}
+			</ul>
+		{:else if id === 'note'}
+			<form
+				method="POST"
+				action="?/quickNote"
+				class="flex items-center gap-2"
+				use:enhance={() => {
+					return async ({ update, result }) => {
+						await update({ reset: false });
+						if (result.type === 'success') {
+							noteBody = '';
+							noteSaved = true;
+							setTimeout(() => (noteSaved = false), 2000);
+						}
+					};
+				}}
+			>
+				<input
+					name="body"
+					type="text"
+					bind:value={noteBody}
+					placeholder="Jot a quick note…"
+					class="glass min-w-0 flex-1 rounded-lg px-3 py-1.5 text-sm text-white placeholder-white/40 outline-none focus:border-primary/60"
+				/>
+				<button
+					type="submit"
+					class="flex-shrink-0 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-white/80 transition-colors hover:border-primary/50 hover:text-primary"
+				>
+					{noteSaved ? 'Saved ✓' : 'Save'}
+				</button>
+			</form>
+		{/if}
+	{/snippet}
+
+	<!-- Every card is position:fixed via widgetStyle, so this isn't a layout
+	     container — it's just where they live in the markup. main's own
+	     content (clock/search/nav/quick links) stays the only thing that
+	     affects main's flow height, which is what keeps that header block
+	     centered on the page regardless of how many cards are floating. -->
+	{#each slots as slot (slot.key)}
+		{@const visibleIds = slot.ids.filter(widgetVisible)}
+		{#if visibleIds.length}
+			{@const cardLabel = visibleIds.map((id) => WIDGET_META[id].label).join(' + ')}
+			<div
+				bind:this={widgetEls[slot.key]}
+				use:registerHeightObserver={slot.key}
+				data-slot-key={slot.key}
+				class={widgetClass(slot)}
+				style={widgetStyle(slot)}
+				role="group"
+				aria-label="{cardLabel} widget"
+			>
+				<div class="flex items-center justify-between gap-2">
+					<h2 class="flex items-center gap-1.5 text-xs font-medium tracking-wide text-white/60 uppercase">
+						{#if visibleIds.length === 1}
+							{@const soloId = visibleIds[0]}
+							{@const SoloIcon = WIDGET_META[soloId].icon}
+							{#if SoloIcon}
+								<SoloIcon size={13} aria-hidden="true" />
+							{/if}
+							{cardLabel}
+							{#if soloId === 'now-playing' || soloId === 'discord'}
+								<span class="relative flex h-1.5 w-1.5" title="Live" aria-hidden="true">
+									<span class="absolute h-full w-full animate-ping rounded-full bg-primary opacity-75"></span>
+									<span class="h-1.5 w-1.5 rounded-full bg-primary"></span>
+								</span>
+							{/if}
+						{:else}
+							<Link2 size={12} aria-hidden="true" class="text-white/30" />
+						{/if}
+					</h2>
+					<div class="flex items-center gap-1.5">
+						{#if dragEnabled}
+							<button
+								type="button"
+								class="cursor-grab touch-none text-white/30 hover:text-primary active:cursor-grabbing"
+								onpointerdown={(e) => startDrag(e, slot)}
+								ondblclick={() => resetSlotPosition(slot)}
+								title="Drag anywhere to move, or onto another card's edge to dock them together. Double-click to reset position."
+								aria-label="Move {cardLabel} widget"
+							>
+									<GripVertical size={12} aria-hidden="true" />
+								</button>
+							{:else}
+								<span
+									class="text-white/15"
+									title="Dragging locked — press Alt+L (or the lock icon, top right) to unlock"
+								>
+									<Lock size={12} aria-hidden="true" />
+								</span>
+							{/if}
+							<div class="relative" data-kebab-menu>
+								<button
+									type="button"
+									onclick={() => (openMenuKey = openMenuKey === slot.key ? null : slot.key)}
+									title="More options"
+									aria-label="More options for {cardLabel} widget"
+									aria-haspopup="true"
+									aria-expanded={openMenuKey === slot.key}
+									class="text-white/30 hover:text-primary"
+								>
+									<MoreVertical size={12} aria-hidden="true" />
+								</button>
+								{#if openMenuKey === slot.key}
+									<div class="glass absolute top-full right-0 z-30 mt-1 w-36 rounded-lg p-1">
 										<button
 											type="button"
-											onclick={loadWeather}
-											class="mt-1.5 text-xs text-white/60 underline hover:text-primary"
+											onclick={() => {
+												hideSlot(slot);
+												openMenuKey = null;
+											}}
+											class="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-white/70 hover:bg-white/10 hover:text-primary"
 										>
-											Retry
+											<EyeOff size={11} aria-hidden="true" /> Hide
 										</button>
-									{:else}
-										<p class="text-xl font-semibold text-white">{weather.tempF}°F</p>
-										<p class="text-sm text-white/60">{weatherLabel(weather.code)}</p>
-									{/if}
-								{:else if id === 'focus'}
-									<p class="text-xl font-semibold text-white tabular-nums">{pomodoroTimeString}</p>
-									<p class="text-xs text-white/60">
-										{pomodoroOnBreak ? 'Break' : 'Focus'} · {data.focusStats.sessionsToday} session{data.focusStats
-											.sessionsToday === 1
-											? ''
-											: 's'} today
-									</p>
-									<div class="mt-2 flex gap-2">
 										<button
 											type="button"
-											onclick={togglePomodoro}
-											class="rounded-lg border border-white/15 px-2.5 py-1 text-xs text-white/80 transition-colors hover:border-primary/50 hover:text-primary"
+											onclick={() => {
+												resetSlotPosition(slot);
+												openMenuKey = null;
+											}}
+											class="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-white/70 hover:bg-white/10 hover:text-primary"
 										>
-											{pomodoroRunning ? 'Pause' : 'Start'}
-										</button>
-										<button
-											type="button"
-											onclick={resetPomodoro}
-											class="rounded-lg border border-white/15 px-2.5 py-1 text-xs text-white/80 transition-colors hover:border-primary/50 hover:text-primary"
-										>
-											Reset
+											<RotateCcw size={11} aria-hidden="true" /> Reset position
 										</button>
 									</div>
-								{:else if id === 'note'}
-									<form
-										method="POST"
-										action="?/quickNote"
-										class="flex items-center gap-2"
-										use:enhance={() => {
-											return async ({ update, result }) => {
-												await update({ reset: false });
-												if (result.type === 'success') {
-													noteBody = '';
-													noteSaved = true;
-													setTimeout(() => (noteSaved = false), 2000);
-												}
-											};
-										}}
-									>
-										<input
-											name="body"
-											type="text"
-											bind:value={noteBody}
-											placeholder="Jot a quick note…"
-											class="glass min-w-0 flex-1 rounded-lg px-3 py-1.5 text-sm text-white placeholder-white/40 outline-none focus:border-primary/60"
-										/>
-										<button
-											type="submit"
-											class="flex-shrink-0 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-white/80 transition-colors hover:border-primary/50 hover:text-primary"
-										>
-											{noteSaved ? 'Saved ✓' : 'Save'}
-										</button>
-									</form>
 								{/if}
 							</div>
 						</div>
+					</div>
+
+					{#if visibleIds.length > 1 && slot.group}
+						{@const dims = gridDimensions(slot.group)}
+						{@const liveFr = resizingColFr?.slotKey === slot.key ? resizingColFr.fr : resolveColFr(slot.group, dims.cols)}
+						<div
+							bind:this={gridEls[slot.key]}
+							class="mt-2.5 grid gap-2.5"
+							style="grid-template-columns: {liveFr
+								.map((fr) => `${fr}fr`)
+								.join(' ')}; grid-template-rows: repeat({dims.rows}, auto);"
+						>
+							{#each slot.group.cells.filter((c) => visibleIds.includes(c.id)) as cell (cell.id)}
+								{@const id = cell.id}
+								{@const meta = WIDGET_META[id]}
+								{@const Icon = meta.icon}
+								<div
+									data-cell-id={id}
+									use:registerCellEl={id}
+									class="relative min-w-0 {cell.col > 0 ? 'border-l border-white/10 pl-2.5' : ''} {cell.row > 0
+										? 'border-t border-white/10 pt-2.5'
+										: ''}"
+									style="grid-column: {cell.col + 1} / span {cell.colSpan}; grid-row: {cell.row + 1} / span {cell.rowSpan};"
+								>
+									{#if cell.col > 0 && dragEnabled}
+										<button
+											type="button"
+											class="col-divider"
+											onpointerdown={(e) => startColumnResize(e, slot, cell.col)}
+											title="Drag to resize columns"
+											aria-label="Resize column before {meta.label}"
+										></button>
+									{/if}
+									<div class="mb-1.5 flex items-center justify-between gap-2">
+										<span
+											class="flex items-center gap-1.5 text-[10px] font-medium tracking-wide text-white/35 uppercase"
+										>
+											{#if Icon}
+												<Icon size={11} aria-hidden="true" />
+											{/if}
+											{meta.label}
+											{#if id === 'now-playing' || id === 'discord'}
+												<span class="relative flex h-1.5 w-1.5" title="Live" aria-hidden="true">
+													<span class="absolute h-full w-full animate-ping rounded-full bg-primary opacity-75"
+													></span>
+													<span class="h-1.5 w-1.5 rounded-full bg-primary"></span>
+												</span>
+											{/if}
+										</span>
+										<button
+											type="button"
+											onclick={() => unlinkWidget(id)}
+											title="Unlink {meta.label} from this card"
+											aria-label="Unlink {meta.label} widget"
+											class="text-white/25 hover:text-primary"
+										>
+											<Unlink size={11} aria-hidden="true" />
+										</button>
+									</div>
+									{@render widgetBody(id)}
+									{#if dragOverEdge?.cellId === id}
+										<div class="dock-edge dock-edge--{dragOverEdge.edge} bg-primary" aria-hidden="true"></div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{:else}
+						{@const soloId = visibleIds[0]}
+						<div class="relative mt-2.5" data-cell-id={soloId} use:registerCellEl={soloId}>
+							{@render widgetBody(soloId)}
+							{#if dragOverEdge?.cellId === soloId}
+								<div class="dock-edge dock-edge--{dragOverEdge.edge} bg-primary" aria-hidden="true"></div>
+							{/if}
+						</div>
 					{/if}
-				{/if}
+					{#if dragEnabled}
+						<button
+							type="button"
+							class="resize-handle"
+							onpointerdown={(e) => startResize(e, slot)}
+							title="Drag to resize"
+							aria-label="Resize {cardLabel} widget"
+						></button>
+					{/if}
+				</div>
+			{/if}
+	{/each}
+</main>
+
+<!-- Fixed rather than in main's flow — main uses justify-center to keep the
+     clock/search/nav/quick-links block vertically centered, and this bar's
+     own height varies with how many widgets are hidden, which would shift
+     that centering around every time something got hidden/shown. Same
+     reasoning as why the floating cards above are all position:fixed. -->
+{#if hiddenIds.size}
+	<div
+		class="glass fixed bottom-4 left-1/2 z-10 flex max-w-[90vw] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-full px-3 py-1.5"
+	>
+		<span class="text-[10px] font-medium tracking-wide text-white/35 uppercase">Hidden</span>
+			{#each slots.filter((s) => s.ids.every((id) => hiddenIds.has(id))) as slot (slot.key)}
+				<button
+					type="button"
+					onclick={() => unhideSlot(slot)}
+					title="Show {slot.ids.map((id) => WIDGET_META[id].label).join(' + ')}"
+					class="flex items-center gap-1.5 rounded-full border border-white/15 px-2.5 py-1 text-xs text-white/60 transition-colors hover:border-primary/50 hover:text-primary"
+				>
+					<Eye size={11} aria-hidden="true" />
+					{slot.ids.map((id) => WIDGET_META[id].label).join(' + ')}
+				</button>
 			{/each}
 		</div>
-	</section>
-</main>
+	{/if}
 
 <style>
 	/* Scoped to this page only — the site's other pages keep their flat
@@ -1146,39 +2149,95 @@
 		border-color: rgba(34, 211, 238, 0.4);
 	}
 
-	/* Same look as .glass, but the blur lives on a ::before pseudo instead of
-	   directly on this element. A `backdrop-filter` (or `filter`) on an
-	   element makes IT the containing block for any `position: fixed`
-	   descendant — since this card wraps the free-floating widgets (see
-	   startDrag), that turned their viewport-relative coordinates into
-	   card-relative ones, teleporting them miles off. The pseudo-element has
-	   no descendants of its own, so it can't hijack their fixed positioning. */
-	.glass-card {
-		position: relative;
-		border: 1px solid rgba(255, 255, 255, 0.12);
-		box-shadow:
-			0 8px 32px rgba(0, 0, 0, 0.35),
-			inset 0 1px 0 rgba(255, 255, 255, 0.06);
-	}
-
-	.glass-card::before {
-		content: '';
-		position: absolute;
-		inset: 0;
-		z-index: -1;
-		border-radius: inherit;
-		background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
-		backdrop-filter: blur(20px) saturate(150%);
-		-webkit-backdrop-filter: blur(20px) saturate(150%);
-	}
-
 	/* Widgets popped out of the grid via their grip handle — see startDrag in
 	   the script block. Capped width keeps them from sprawling once they're
 	   no longer constrained by the grid column that used to size them. */
 	.floating-widget {
-		max-width: 320px;
 		box-shadow:
 			0 20px 50px rgba(0, 0, 0, 0.5),
 			inset 0 1px 0 rgba(255, 255, 255, 0.08);
+	}
+
+	/* Drag handle for free width-resizing (see startResize) — a small
+	   diagonal grip in the card's bottom-right corner. */
+	.resize-handle {
+		position: absolute;
+		right: 2px;
+		bottom: 2px;
+		width: 14px;
+		height: 14px;
+		cursor: ew-resize;
+		touch-action: none;
+		background: linear-gradient(
+			135deg,
+			transparent 0%,
+			transparent 45%,
+			rgba(255, 255, 255, 0.3) 45%,
+			rgba(255, 255, 255, 0.3) 55%,
+			transparent 55%,
+			transparent 100%
+		);
+		border-radius: 0 0 12px 0;
+		opacity: 0.6;
+	}
+
+	.resize-handle:hover {
+		opacity: 1;
+	}
+
+	/* Draggable divider between two columns inside a merged card (see
+	   startColumnResize) — sits centered over the visual hairline border,
+	   wider than the 1px border itself so it's actually grabbable. */
+	.col-divider {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: -7px;
+		width: 14px;
+		cursor: ew-resize;
+		touch-action: none;
+		background: transparent;
+	}
+
+	.col-divider:hover {
+		background: rgba(255, 255, 255, 0.08);
+	}
+
+	/* Dock-zone seam highlight — rendered on the specific sub-widget edge a
+	   dragged card is currently close enough to dock onto (see
+	   dragOverEdge / dockTargetUnderPoint in the script block). */
+	.dock-edge {
+		position: absolute;
+		border-radius: 2px;
+		pointer-events: none;
+		opacity: 0.9;
+	}
+
+	.dock-edge--top {
+		top: -6px;
+		left: 4px;
+		right: 4px;
+		height: 3px;
+	}
+
+	.dock-edge--bottom {
+		bottom: -6px;
+		left: 4px;
+		right: 4px;
+		height: 3px;
+	}
+
+	.dock-edge--left {
+		left: -6px;
+		top: 4px;
+		bottom: 4px;
+		width: 3px;
+	}
+
+	.dock-edge--right {
+		right: -6px;
+		top: 4px;
+		bottom: 4px;
+		width: 3px;
 	}
 </style>
