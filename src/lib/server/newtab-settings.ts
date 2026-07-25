@@ -3,7 +3,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { env } from '$env/dynamic/private';
 
-export type NewtabSettings = { unsplashQuery: string | null };
+export type NewtabSettings = { unsplashQuery: string | null; icsUrl: string | null };
 
 export type QuickLink = {
 	id: number;
@@ -27,6 +27,11 @@ export type PhotoCacheEntry = { query: string; fetchedAt: number; photo: CachedP
 export type PhotoHistoryEntry = CachedPhoto & { id: number; favorited: boolean; fetchedAt: number };
 
 export type FocusStats = { sessionsToday: number; focusMinutesToday: number };
+
+export type TodoItem = { id: number; body: string; done: boolean; position: number; createdAt: string };
+
+export type FocusDailyStat = { date: string; minutes: number };
+export type FocusWeeklyStats = { days: FocusDailyStat[]; streak: number };
 
 // Single-row table, same shape as status-db.ts — lets the /newtab background
 // query be changed from the page's own settings panel instead of requiring
@@ -79,6 +84,14 @@ const SCHEMA = `
 		query TEXT NOT NULL,
 		searched_at TEXT NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS todo_items (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		body TEXT NOT NULL,
+		done INTEGER NOT NULL DEFAULT 0,
+		position INTEGER NOT NULL,
+		created_at TEXT NOT NULL
+	);
 `;
 
 // quick_links used to live as a single JSON blob in newtab_settings.quick_links
@@ -117,6 +130,9 @@ function migrateColumns(instance: Database.Database): void {
 	if (!columns.some((col) => col.name === 'quick_links')) {
 		instance.exec('ALTER TABLE newtab_settings ADD COLUMN quick_links TEXT');
 	}
+	if (!columns.some((col) => col.name === 'ics_url')) {
+		instance.exec('ALTER TABLE newtab_settings ADD COLUMN ics_url TEXT');
+	}
 
 	const quickLinkColumns = instance.prepare('PRAGMA table_info(quick_links)').all() as { name: string }[];
 	if (!quickLinkColumns.some((col) => col.name === 'icon')) {
@@ -151,10 +167,19 @@ export function __setDbForTests(instance: Database.Database | null): void {
 }
 
 export function getNewtabSettings(): NewtabSettings {
-	const row = getDb().prepare('SELECT unsplash_query FROM newtab_settings WHERE id = 1').get() as
-		| { unsplash_query: string | null }
+	const row = getDb().prepare('SELECT unsplash_query, ics_url FROM newtab_settings WHERE id = 1').get() as
+		| { unsplash_query: string | null; ics_url: string | null }
 		| undefined;
-	return { unsplashQuery: row?.unsplash_query || null };
+	return { unsplashQuery: row?.unsplash_query || null, icsUrl: row?.ics_url || null };
+}
+
+export function setNewtabIcsUrl(url: string | null): void {
+	getDb()
+		.prepare(
+			`INSERT INTO newtab_settings (id, ics_url) VALUES (1, ?)
+			 ON CONFLICT(id) DO UPDATE SET ics_url = excluded.ics_url`
+		)
+		.run(url);
 }
 
 export function setNewtabUnsplashQuery(query: string | null): void {
@@ -273,6 +298,10 @@ export function toggleFavoritePhoto(id: number): void {
 	getDb().prepare('UPDATE photo_history SET favorited = NOT favorited WHERE id = ?').run(id);
 }
 
+export function getPhotoHistoryEntry(id: number): PhotoHistoryEntry | null {
+	return listPhotoHistory().find((p) => p.id === id) ?? null;
+}
+
 // Picks a different cached photo at random — used by the "cycle" button so
 // browsing past backgrounds never counts against the Unsplash API quota.
 export function pickRandomPhotoHistory(excludeUrl?: string): PhotoHistoryEntry | null {
@@ -329,6 +358,51 @@ export function getFocusStats(): FocusStats {
 	return { sessionsToday: rows.length, focusMinutesToday };
 }
 
+function localDateKey(d: Date): string {
+	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Per-day completed-focus-minutes for the trailing `days` days (default a
+// week), plus the current streak — consecutive days (ending today) with at
+// least one completed focus session. Used by the weekly digest sparkline on
+// the focus widget; getFocusStats above only ever needed "today."
+export function getFocusWeeklyStats(days = 7): FocusWeeklyStats {
+	const today = new Date();
+	today.setHours(0, 0, 0, 0);
+	const since = new Date(today);
+	since.setDate(since.getDate() - (days - 1));
+
+	const rows = getDb()
+		.prepare(
+			`SELECT started_at AS startedAt, ended_at AS endedAt FROM focus_sessions
+			 WHERE kind = 'focus' AND completed = 1 AND started_at >= ?`
+		)
+		.all(since.toISOString()) as { startedAt: string; endedAt: string }[];
+
+	const minutesByDate = new Map<string, number>();
+	for (const row of rows) {
+		const key = localDateKey(new Date(row.startedAt));
+		const minutes = Math.max(0, Math.round((new Date(row.endedAt).getTime() - new Date(row.startedAt).getTime()) / 60000));
+		minutesByDate.set(key, (minutesByDate.get(key) ?? 0) + minutes);
+	}
+
+	const dailyStats: FocusDailyStat[] = [];
+	for (let i = days - 1; i >= 0; i--) {
+		const d = new Date(today);
+		d.setDate(d.getDate() - i);
+		const key = localDateKey(d);
+		dailyStats.push({ date: key, minutes: minutesByDate.get(key) ?? 0 });
+	}
+
+	let streak = 0;
+	for (let i = dailyStats.length - 1; i >= 0; i--) {
+		if (dailyStats[i].minutes > 0) streak++;
+		else break;
+	}
+
+	return { days: dailyStats, streak };
+}
+
 // --- Search history -----------------------------------------------------------
 
 const SEARCH_HISTORY_LIMIT = 8;
@@ -354,4 +428,47 @@ export function getRecentSearches(limit = 5): string[] {
 		.prepare('SELECT query FROM search_history ORDER BY searched_at DESC LIMIT ?')
 		.all(limit) as { query: string }[];
 	return rows.map((r) => r.query);
+}
+
+// Also removes deletion for the search-history "x" button on the /newtab
+// suggestions dropdown — a search entry someone doesn't want resurfacing
+// shouldn't have to wait to fall off the LIMIT-8 cap above.
+export function removeSearch(query: string): void {
+	getDb().prepare('DELETE FROM search_history WHERE query = ?').run(query);
+}
+
+// --- To-do items -----------------------------------------------------------
+
+type TodoRow = { id: number; body: string; done: number; position: number; created_at: string };
+
+function mapTodoRow(row: TodoRow): TodoItem {
+	return { id: row.id, body: row.body, done: Boolean(row.done), position: row.position, createdAt: row.created_at };
+}
+
+export function getTodoItems(): TodoItem[] {
+	const rows = getDb()
+		.prepare('SELECT id, body, done, position, created_at FROM todo_items ORDER BY position ASC, id ASC')
+		.all() as TodoRow[];
+	return rows.map(mapTodoRow);
+}
+
+export function addTodoItem(body: string): TodoItem {
+	const db = getDb();
+	const maxPosition = db.prepare('SELECT COALESCE(MAX(position), -1) AS max FROM todo_items').get() as {
+		max: number;
+	};
+	const position = maxPosition.max + 1;
+	const createdAt = new Date().toISOString();
+	const result = db
+		.prepare('INSERT INTO todo_items (body, done, position, created_at) VALUES (?, 0, ?, ?)')
+		.run(body, position, createdAt);
+	return { id: Number(result.lastInsertRowid), body, done: false, position, createdAt };
+}
+
+export function toggleTodoItem(id: number): void {
+	getDb().prepare('UPDATE todo_items SET done = NOT done WHERE id = ?').run(id);
+}
+
+export function removeTodoItem(id: number): void {
+	getDb().prepare('DELETE FROM todo_items WHERE id = ?').run(id);
 }

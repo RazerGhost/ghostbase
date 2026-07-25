@@ -1,8 +1,10 @@
 import { getStatus } from '$lib/server/status-db';
 import { getBackgroundPhoto, defaultUnsplashQuery, unsplashConfigured } from '$lib/server/unsplash';
+import { getUpcomingEvents, type AgendaEvent } from '$lib/server/calendar';
 import {
 	getNewtabSettings,
 	setNewtabUnsplashQuery,
+	setNewtabIcsUrl,
 	getQuickLinks,
 	addQuickLink,
 	updateQuickLink,
@@ -12,10 +14,17 @@ import {
 	listPhotoHistory,
 	pickRandomPhotoHistory,
 	toggleFavoritePhoto,
+	getPhotoHistoryEntry,
 	getFocusStats,
+	getFocusWeeklyStats,
 	logFocusSession,
 	getRecentSearches,
-	logSearch
+	logSearch,
+	removeSearch,
+	getTodoItems,
+	addTodoItem,
+	toggleTodoItem,
+	removeTodoItem
 } from '$lib/server/newtab-settings';
 import { getLibraryWithFallback, simklConfigured } from '$lib/server/simkl';
 import { createNote, listNotes } from '$lib/server/notes';
@@ -38,6 +47,15 @@ export const load: PageServerLoad = async () => {
 		}
 	}
 
+	let agenda: AgendaEvent[] = [];
+	if (settings.icsUrl) {
+		try {
+			agenda = await getUpcomingEvents(settings.icsUrl);
+		} catch {
+			agenda = [];
+		}
+	}
+
 	return {
 		statusItems: status.items,
 		photo,
@@ -45,10 +63,14 @@ export const load: PageServerLoad = async () => {
 		unsplashConfigured: unsplashConfigured(),
 		quickLinks,
 		watching,
+		icsUrl: settings.icsUrl,
+		agenda,
 		photoHistory: listPhotoHistory(),
 		focusStats: getFocusStats(),
+		focusWeekly: getFocusWeeklyStats(),
 		recentSearches: getRecentSearches(),
-		recentNotes: listNotes().slice(0, 3)
+		recentNotes: listNotes().slice(0, 3),
+		todoItems: getTodoItems()
 	};
 };
 
@@ -57,6 +79,13 @@ export const actions: Actions = {
 		const data = await request.formData();
 		const query = String(data.get('query') ?? '').trim();
 		setNewtabUnsplashQuery(query || null);
+		return { success: true };
+	},
+
+	updateIcsUrl: async ({ request }) => {
+		const data = await request.formData();
+		const url = String(data.get('icsUrl') ?? '').trim();
+		setNewtabIcsUrl(url || null);
 		return { success: true };
 	},
 
@@ -73,6 +102,13 @@ export const actions: Actions = {
 		if (!id) return { success: false };
 		toggleFavoritePhoto(id);
 		return { success: true };
+	},
+
+	selectPhoto: async ({ request }) => {
+		const data = await request.formData();
+		const id = Number(data.get('id'));
+		const entry = id ? getPhotoHistoryEntry(id) : null;
+		return { success: Boolean(entry), photo: entry };
 	},
 
 	addQuickLink: async ({ request }) => {
@@ -129,6 +165,38 @@ export const actions: Actions = {
 		const data = await request.formData();
 		const query = String(data.get('query') ?? '');
 		logSearch(query);
+		return { success: true };
+	},
+
+	removeSearch: async ({ request }) => {
+		const data = await request.formData();
+		const query = String(data.get('query') ?? '');
+		if (!query) return { success: false };
+		removeSearch(query);
+		return { success: true };
+	},
+
+	addTodo: async ({ request }) => {
+		const data = await request.formData();
+		const body = String(data.get('body') ?? '').trim();
+		if (!body) return { success: false };
+		const item = addTodoItem(body);
+		return { success: true, item };
+	},
+
+	toggleTodo: async ({ request }) => {
+		const data = await request.formData();
+		const id = Number(data.get('id'));
+		if (!id) return { success: false };
+		toggleTodoItem(id);
+		return { success: true };
+	},
+
+	removeTodo: async ({ request }) => {
+		const data = await request.formData();
+		const id = Number(data.get('id'));
+		if (!id) return { success: false };
+		removeTodoItem(id);
 		return { success: true };
 	},
 

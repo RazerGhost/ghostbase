@@ -41,6 +41,8 @@
 		getWidgetGroups,
 		setWidgetGroups,
 		resetWidgetGroups,
+		getMergeHintDismissed,
+		setMergeHintDismissed,
 		getQuickLinksSortByClicks,
 		type FloatPosition,
 		type WidgetGroup as StoredWidgetGroup
@@ -753,6 +755,13 @@
 	// things while I click around" switch, not a durable setting.
 	let dragEnabled = $state(true);
 
+	// One-time discoverability nudge for merging — the only other hint is a
+	// tooltip on the tiny grip icon, easy to miss. Hidden once dismissed, or
+	// automatically once the first merge actually happens (see mergeAtEdge).
+	// showMergeHint/dismissMergeHint live further down, right after
+	// isNarrowViewport is declared, since the hint doesn't apply there.
+	let mergeHintDismissed = $state(true);
+
 	// Deliberately reads only from localStorage helpers here, never from the
 	// reactive $state vars this effect writes to (groups, floatPositions,
 	// etc.) — reading one of those back after writing it, within the same
@@ -785,6 +794,8 @@
 			if (pos) loadedFloat[slot.key] = pos;
 		}
 		floatPositions = loadedFloat;
+
+		mergeHintDismissed = getMergeHintDismissed();
 
 		hiddenIds = new Set(
 			getHiddenWidgetIds().filter((id): id is WidgetId => (WIDGET_IDS as readonly string[]).includes(id))
@@ -828,11 +839,18 @@
 	// exist at all).
 	let canvasAnchorEl = $state<HTMLElement | undefined>();
 	let canvasTop = $state(460);
+	// Tracked reactively (not just read ad hoc) so anything that positions or
+	// sizes a card — clampPosition, the narrow-viewport fallback below — stays
+	// correct as the window resizes, not just at first render.
+	let viewportWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1280);
+	let viewportHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 800);
 	$effect(() => {
 		if (!canvasAnchorEl) return;
 		const el = canvasAnchorEl;
 		function update() {
 			canvasTop = el.getBoundingClientRect().bottom + 32;
+			viewportWidth = window.innerWidth;
+			viewportHeight = window.innerHeight;
 		}
 		update();
 		const ro = new ResizeObserver(update);
@@ -870,7 +888,6 @@
 	// for a card that hasn't rendered/measured yet), so cards pack tightly
 	// without overlapping regardless of how tall any individual card is.
 	const packedPositions = $derived.by((): Record<string, FloatPosition> => {
-		const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
 		const cols = Math.max(1, Math.floor((viewportWidth - CARD_GAP) / (CARD_WIDTH_NARROW + CARD_GAP)));
 		const totalWidth = cols * CARD_WIDTH_NARROW + (cols - 1) * CARD_GAP;
 		const startX = Math.max(CARD_GAP, (viewportWidth - totalWidth) / 2);
@@ -890,24 +907,43 @@
 		return packedPositions[key] ?? { x: CARD_GAP, y: canvasTop, width: CARD_WIDTH_NARROW };
 	}
 
+	const CARD_WIDTH_MIN = 200;
+	const CARD_WIDTH_MAX = 720;
+
+	// Pulls a position back within the current viewport without touching
+	// what's actually saved — a card dragged near an edge (or one saved on a
+	// wider window, then reopened on a narrower one) still renders fully
+	// on-screen, but reverts to its real saved spot the moment the viewport
+	// is wide enough again rather than being permanently rewritten here.
+	function clampPosition(pos: FloatPosition): FloatPosition {
+		const width = Math.min(pos.width, Math.max(CARD_WIDTH_MIN, viewportWidth - CARD_GAP * 2));
+		const maxX = Math.max(CARD_GAP, viewportWidth - width - CARD_GAP);
+		// No equivalent max-height concept for a card (height is content-sized,
+		// not stored) — just keep its top edge from drifting so far down the
+		// header/grip becomes unreachable.
+		const maxY = Math.max(CARD_GAP, viewportHeight - 60);
+		return {
+			x: Math.min(Math.max(pos.x, CARD_GAP), maxX),
+			y: Math.min(Math.max(pos.y, CARD_GAP), maxY),
+			width
+		};
+	}
+
 	// A slot's position right now — its live on-screen rect if mounted,
-	// otherwise its algorithmic default. Used whenever a position needs to
-	// be captured/carried over (merge, unlink, resize) rather than read
-	// from floatPositions directly, since an untouched card has no entry
-	// there yet.
+	// otherwise its algorithmic default — always clamped to the current
+	// viewport. Used whenever a position needs to be captured/carried over
+	// (merge, unlink, resize) rather than read from floatPositions directly,
+	// since an untouched card has no entry there yet.
 	function currentPositionFor(slot: Slot): FloatPosition {
 		const saved = floatPositions[slot.key];
-		if (saved) return saved;
+		if (saved) return clampPosition(saved);
 		const el = widgetEls[slot.key];
 		if (el) {
 			const rect = el.getBoundingClientRect();
-			return { x: rect.left, y: rect.top, width: rect.width };
+			return clampPosition({ x: rect.left, y: rect.top, width: rect.width });
 		}
-		return defaultPosition(slot.key);
+		return clampPosition(defaultPosition(slot.key));
 	}
-
-	const CARD_WIDTH_MIN = 200;
-	const CARD_WIDTH_MAX = 720;
 
 	// Resizing a merged card that has a "spanning" cell (one with a row of
 	// other cells docked directly below it — e.g. a wide card over 2-3
@@ -950,6 +986,7 @@
 
 		const origin = currentPositionFor(slot);
 		activeResizeKey = slot.key;
+		bringToFront(slot.key);
 		const startX = event.clientX;
 
 		function onMove(e: PointerEvent) {
@@ -1106,6 +1143,8 @@
 		if (!targetSlot || targetSlot.key === source.key) return;
 		const targetPos = currentPositionFor(targetSlot);
 
+		if (!mergeHintDismissed) dismissMergeHint();
+
 		const involved = new Set(source.ids);
 		const remainingGroups = groups.filter((g) => !g.cells.some((c) => involved.has(c.id)) && g !== targetSlot.group);
 
@@ -1135,6 +1174,19 @@
 		clearFloatPosition(source.key);
 		clearFloatPosition(targetSlot.key);
 		setFloatPosition(mergedKey, mergedPos);
+	}
+
+	// Stacking order for overlapping cards — most-recently-interacted-with
+	// last (topmost). Session-only, same as dragEnabled: which card happens
+	// to be on top is a transient viewing preference, not worth persisting.
+	let zOrder = $state<string[]>([]);
+	function bringToFront(key: string) {
+		if (zOrder[zOrder.length - 1] === key) return;
+		zOrder = [...zOrder.filter((k) => k !== key), key];
+	}
+	function zIndexFor(key: string): number {
+		const index = zOrder.indexOf(key);
+		return 10 + (index === -1 ? 0 : index + 1);
 	}
 
 	// Single pointer-based gesture drives both freeform positioning and
@@ -1183,6 +1235,7 @@
 		const hadPosition = !!floatPositions[slot.key];
 		floatPositions = { ...floatPositions, [slot.key]: origin };
 		activeDragKey = slot.key;
+		bringToFront(slot.key);
 
 		const startX = event.clientX;
 		const startY = event.clientY;
@@ -1250,15 +1303,29 @@
 		groups = [];
 	}
 
+	// Below this width, dragging/resizing/docking a pixel-positioned canvas
+	// doesn't really work on a touch screen — fall back to a plain stacked
+	// list in normal document flow instead (see the template's wrapper div
+	// and widgetStyle/widgetClass below).
+	const NARROW_BREAKPOINT = 640;
+	const isNarrowViewport = $derived(viewportWidth < NARROW_BREAKPOINT);
+
+	const showMergeHint = $derived(!mergeHintDismissed && groups.length === 0 && !isNarrowViewport);
+	function dismissMergeHint() {
+		mergeHintDismissed = true;
+		setMergeHintDismissed();
+	}
+
 	function widgetClass(slot: Slot): string {
 		const lifted = activeDragKey === slot.key || activeResizeKey === slot.key ? ' scale-105 opacity-90' : '';
 		return `glass floating-widget rounded-2xl p-4${lifted}`;
 	}
 
 	function widgetStyle(slot: Slot): string {
-		const pos = floatPositions[slot.key] ?? defaultPosition(slot.key);
 		const lifted = activeDragKey === slot.key || activeResizeKey === slot.key;
-		return `position:fixed; left:${pos.x}px; top:${pos.y}px; width:${pos.width}px; z-index:${lifted ? 20 : 10}; pointer-events:${activeDragKey === slot.key ? 'none' : 'auto'};`;
+		if (isNarrowViewport) return `width:100%; z-index:${lifted ? 20 : 1};`;
+		const pos = currentPositionFor(slot);
+		return `position:fixed; left:${pos.x}px; top:${pos.y}px; width:${pos.width}px; z-index:${lifted ? 1000 : zIndexFor(slot.key)}; pointer-events:${activeDragKey === slot.key ? 'none' : 'auto'};`;
 	}
 </script>
 
@@ -1604,6 +1671,23 @@
 		</div>
 	{/if}
 
+	{#if showMergeHint}
+		<div
+			class="glass mx-auto mt-4 flex w-fit max-w-full items-center gap-2 rounded-full px-3 py-1.5 text-xs text-white/70"
+		>
+			<Link2 size={12} aria-hidden="true" class="flex-shrink-0 text-primary" />
+			<span>Drag a card onto another's edge to dock them together.</span>
+			<button
+				type="button"
+				onclick={dismissMergeHint}
+				aria-label="Dismiss tip"
+				class="flex-shrink-0 text-white/40 hover:text-primary"
+			>
+				<X size={11} aria-hidden="true" />
+			</button>
+		</div>
+	{/if}
+
 	<!-- Marks where the centered header block actually ends, so the
 	     floating-card canvas can start below it regardless of viewport
 	     height/content (see canvasAnchorEl / canvasTop above). -->
@@ -1815,24 +1899,30 @@
 		{/if}
 	{/snippet}
 
-	<!-- Every card is position:fixed via widgetStyle, so this isn't a layout
-	     container — it's just where they live in the markup. main's own
-	     content (clock/search/nav/quick links) stays the only thing that
-	     affects main's flow height, which is what keeps that header block
-	     centered on the page regardless of how many cards are floating. -->
-	{#each slots as slot (slot.key)}
-		{@const visibleIds = slot.ids.filter(widgetVisible)}
-		{#if visibleIds.length}
-			{@const cardLabel = visibleIds.map((id) => WIDGET_META[id].label).join(' + ')}
-			<div
-				bind:this={widgetEls[slot.key]}
-				use:registerHeightObserver={slot.key}
-				data-slot-key={slot.key}
-				class={widgetClass(slot)}
-				style={widgetStyle(slot)}
-				role="group"
-				aria-label="{cardLabel} widget"
-			>
+	<!-- On a wide viewport every card is position:fixed via widgetStyle, so
+	     this wrapper isn't a layout container there — it's just where they
+	     live in the markup, and main's own content (clock/search/nav/quick
+	     links) stays the only thing that affects main's flow height, keeping
+	     that header block centered regardless of how many cards are
+	     floating. Below NARROW_BREAKPOINT, dragging a pixel-positioned
+	     canvas doesn't work well on a touch screen, so widgetStyle instead
+	     returns normal-flow sizing and this wrapper becomes a real stacked
+	     list (see isNarrowViewport above). -->
+	<div class={isNarrowViewport ? 'mx-auto mt-6 flex w-full max-w-md flex-col gap-3' : ''}>
+		{#each slots as slot (slot.key)}
+			{@const visibleIds = slot.ids.filter(widgetVisible)}
+			{#if visibleIds.length}
+				{@const cardLabel = visibleIds.map((id) => WIDGET_META[id].label).join(' + ')}
+				<div
+					bind:this={widgetEls[slot.key]}
+					use:registerHeightObserver={slot.key}
+					onpointerdown={() => bringToFront(slot.key)}
+					data-slot-key={slot.key}
+					class={widgetClass(slot)}
+					style={widgetStyle(slot)}
+					role="group"
+					aria-label="{cardLabel} widget"
+				>
 				<div class="flex items-center justify-between gap-2">
 					<h2 class="flex items-center gap-1.5 text-xs font-medium tracking-wide text-white/60 uppercase">
 						{#if visibleIds.length === 1}
@@ -1853,7 +1943,10 @@
 						{/if}
 					</h2>
 					<div class="flex items-center gap-1.5">
-						{#if dragEnabled}
+						{#if isNarrowViewport}
+							<!-- No drag/reorder affordance below the narrow breakpoint —
+							     see isNarrowViewport above. -->
+						{:else if dragEnabled}
 							<button
 								type="button"
 								class="cursor-grab touch-none text-white/30 hover:text-primary active:cursor-grabbing"
@@ -1934,7 +2027,7 @@
 										: ''}"
 									style="grid-column: {cell.col + 1} / span {cell.colSpan}; grid-row: {cell.row + 1} / span {cell.rowSpan};"
 								>
-									{#if cell.col > 0 && dragEnabled}
+									{#if cell.col > 0 && dragEnabled && !isNarrowViewport}
 										<button
 											type="button"
 											class="col-divider"
@@ -1985,7 +2078,7 @@
 							{/if}
 						</div>
 					{/if}
-					{#if dragEnabled}
+					{#if dragEnabled && !isNarrowViewport}
 						<button
 							type="button"
 							class="resize-handle"
@@ -1997,6 +2090,7 @@
 				</div>
 			{/if}
 	{/each}
+	</div>
 </main>
 
 <!-- Fixed rather than in main's flow — main uses justify-center to keep the

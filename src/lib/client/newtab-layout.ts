@@ -117,6 +117,20 @@ export function resetWidgetGroups(): void {
 	localStorage.removeItem(GROUPS_KEY);
 }
 
+// Whether the one-time "drag a card onto another to merge them" tip has
+// been dismissed — shown until the user either dismisses it explicitly or
+// merges a card for the first time (see mergeAtEdge in +page.svelte).
+const MERGE_HINT_KEY = 'newtab:merge-hint-dismissed';
+
+export function getMergeHintDismissed(): boolean {
+	if (typeof localStorage === 'undefined') return false;
+	return localStorage.getItem(MERGE_HINT_KEY) === '1';
+}
+
+export function setMergeHintDismissed(): void {
+	localStorage.setItem(MERGE_HINT_KEY, '1');
+}
+
 // Whether the quick links row is displayed sorted by click count instead of
 // the saved manual order — a per-device display preference, same reasoning
 // as everything else in this file.

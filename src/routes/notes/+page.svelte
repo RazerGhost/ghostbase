@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { richMarked, markTaskListItems } from '$lib/markdown';
 	import { browser } from '$app/environment';
+	import { page } from '$app/state';
 	import Seo from '$lib/components/Seo.svelte';
 	import Logo from '$lib/components/Logo.svelte';
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
@@ -1214,7 +1215,9 @@
 			.filter((n) => !folderFilter || n.folder.trim() === folderFilter)
 			.sort((a, b) => b.updated_at.localeCompare(a.updated_at))
 	);
-	let search = $state('');
+	// Pre-fills from ?q= so the /newtab dashboard's "!notes" bang can link
+	// straight into a search rather than just the bare notes list.
+	let search = $state(page.url.searchParams.get('q') ?? '');
 	let searchResults = $state<{ id: number; title: string; updated_at: string }[] | null>(null);
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
