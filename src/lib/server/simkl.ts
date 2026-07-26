@@ -198,12 +198,21 @@ export async function enrichLibrary(library: Library): Promise<Library> {
 	const cached = getCachedDetails(keys);
 	const now = Date.now();
 
-	const stale = buckets.filter((item) => {
-		const hit = cached.get(cacheKey(item.simklId, item.mediaType));
-		// Also refetch entries cached before `runtime` was added — otherwise
-		// they'd wait out the full 60-day staleness window before backfilling.
-		return !hit || hit.runtime == null || now - new Date(hit.fetchedAt).getTime() > STALE_AFTER_MS;
-	});
+	const stale = buckets
+		.filter((item) => {
+			const hit = cached.get(cacheKey(item.simklId, item.mediaType));
+			// Also refetch entries cached before `runtime` was added — otherwise
+			// they'd wait out the full 60-day staleness window before backfilling.
+			return !hit || hit.runtime == null || now - new Date(hit.fetchedAt).getTime() > STALE_AFTER_MS;
+		})
+		// Recently-watched titles jump the queue so a fresh watch's runtime
+		// backfills within a page load or two instead of sitting behind
+		// older stale entries and silently undercounting watch time.
+		.sort((a, b) => {
+			const aTime = a.lastWatchedAt ? new Date(a.lastWatchedAt).getTime() : 0;
+			const bTime = b.lastWatchedAt ? new Date(b.lastWatchedAt).getTime() : 0;
+			return bTime - aTime;
+		});
 
 	const toFetch = stale.slice(0, DETAIL_BATCH_SIZE);
 	// One flaky detail request shouldn't sink the whole page — the library

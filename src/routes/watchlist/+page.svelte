@@ -220,15 +220,6 @@
     const filteredDropped = $derived(prepare(groupDropped));
     const filteredPlanToWatch = $derived(prepare(groupPlanToWatch));
 
-    const totalEpisodesWatched = $derived(
-        [
-            ...groupWatching,
-            ...groupCompleted,
-            ...groupOnHold,
-            ...groupDropped,
-            ...groupPlanToWatch,
-        ].reduce((sum, item) => sum + item.watchedEpisodes, 0),
-    );
     const completedThisYear = $derived.by(() => {
         const year = new Date().getFullYear();
         return groupCompleted.filter(
@@ -247,6 +238,15 @@
         ...groupDropped,
     ]);
     const allTrackedGroups = $derived([...watchedGroups, ...groupPlanToWatch]);
+
+    const totalEpisodesWatchedTvOnly = $derived(
+        watchedGroups
+            .filter((item) => item.mediaType !== "movies")
+            .reduce((sum, item) => sum + item.watchedEpisodes, 0),
+    );
+    const moviesCompletedCount = $derived(
+        groupCompleted.filter((item) => item.mediaType === "movies").length,
+    );
 
     const totalMinutesWatched = $derived(
         watchedGroups.reduce(
@@ -595,8 +595,12 @@
                     >
                     <span class="text-sm text-dim">m</span>
                 </p>
+                <p class="mt-2 text-xs text-dim">
+                    Estimated from average episode runtime — may differ
+                    slightly from Simkl's own totals.
+                </p>
                 {#if hasIncompleteRuntimeData}
-                    <p class="mt-2 text-xs text-dim">
+                    <p class="mt-1 text-xs text-dim">
                         Still warming up — some runtimes haven't been fetched
                         yet.
                     </p>
@@ -613,7 +617,11 @@
                     </div>
                     <div>
                         <p class="text-xl font-bold text-white">
-                            {totalEpisodesWatched}
+                            {totalEpisodesWatchedTvOnly}{#if moviesCompletedCount > 0}<span
+                                    class="text-dim"
+                                >
+                                    · +{moviesCompletedCount} movies</span
+                                >{/if}
                         </p>
                         <p class="mt-0.5 text-xs text-dim">Episodes watched</p>
                     </div>
