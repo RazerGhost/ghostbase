@@ -1,14 +1,15 @@
 import { env } from '$env/dynamic/private';
 
-// In-memory access-token cache (per server process). Avoids hitting
-// Spotify's token endpoint on every poll from every visitor — refreshed
-// lazily once it's within 60s of expiring. Shared by every route that
-// talks to the Spotify API so they don't each keep their own cache.
+// In-memory access-token cache (per server process). Refreshed lazily once
+// it's within 60s of expiring. Shared by every route that still talks to
+// Spotify's own API (recently-played history, live scrobbling) so they don't
+// each keep their own cache. Currently-playing no longer lives here — see
+// stores/lanyard.svelte.ts.
 let cachedToken: { accessToken: string; expiresAt: number } | null = null;
 
-// Single-flight guard: when the cache is cold, several concurrent requests
-// (widget poll + recent + scrobble) would otherwise each hit the token
-// endpoint at once — share one in-flight refresh instead.
+// Single-flight guard: when the cache is cold, concurrent requests (recent +
+// scrobble) would otherwise each hit the token endpoint at once — share one
+// in-flight refresh instead.
 let refreshInFlight: Promise<string> | null = null;
 
 export function spotifyConfigured(): boolean {
@@ -57,41 +58,77 @@ export async function getSpotifyAccessToken(): Promise<string> {
 	return refreshInFlight;
 }
 
-export interface CurrentlyPlaying {
-	playing: boolean;
-	track?: string;
+export interface RecentlyPlayedItem {
+	track: string;
 	artist?: string;
 	url?: string;
 	albumArt?: string;
-	progressMs?: number;
-	durationMs?: number;
+	playedAt: string;
 }
 
-// Shared by the /api/spotify polling route (floating widget) and the
-// homepage server load — one fetch/parse implementation for both.
-export async function getCurrentlyPlaying(): Promise<CurrentlyPlaying> {
+export interface RecentlyPlayed {
+	available: boolean;
+	items: RecentlyPlayedItem[];
+	reason?: 'missing_scope';
+}
+
+// SpotifyWidget is mounted on every page and polls this every 60s while
+// open — with several visitors' tabs open at once that's still several
+// upstream calls a minute against the one shared refresh token. A short
+// cache collapses concurrent pollers into a single upstream call, same
+// idea as unsplash.ts's photo cache and calendar.ts's ICS cache.
+const RECENT_CACHE_MS = 30_000;
+let recentCache: { data: RecentlyPlayed; fetchedAt: number } | null = null;
+let recentInFlight: Promise<RecentlyPlayed> | null = null;
+
+async function fetchRecentlyPlayed(): Promise<RecentlyPlayed> {
 	const accessToken = await getSpotifyAccessToken();
-	const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+	const res = await fetch('https://api.spotify.com/v1/me/player/recently-played?limit=5', {
 		headers: { Authorization: `Bearer ${accessToken}` },
 		signal: AbortSignal.timeout(10_000)
 	});
 
-	if (res.status === 204 || !res.ok) {
-		return { playing: false };
-	}
+	// Requires the `user-read-recently-played` scope on top of
+	// `user-read-currently-playing` — a refresh token minted before that
+	// scope was requested won't have it.
+	if (res.status === 403) return { available: false, items: [], reason: 'missing_scope' };
+	if (!res.ok) return { available: false, items: [] };
 
 	const data = await res.json();
-	if (!data?.item) {
-		return { playing: false };
-	}
+	const items: RecentlyPlayedItem[] = (data.items ?? []).map(
+		(entry: {
+			track: {
+				name: string;
+				artists: { name: string }[];
+				external_urls?: { spotify?: string };
+				album?: { images?: { url: string }[] };
+			};
+			played_at: string;
+		}) => ({
+			track: entry.track.name,
+			artist: entry.track.artists?.map((a) => a.name).join(', '),
+			url: entry.track.external_urls?.spotify,
+			albumArt: entry.track.album?.images?.[2]?.url ?? entry.track.album?.images?.[0]?.url,
+			playedAt: entry.played_at
+		})
+	);
 
-	return {
-		playing: Boolean(data.is_playing),
-		track: data.item.name,
-		artist: data.item.artists?.map((a: { name: string }) => a.name).join(', '),
-		url: data.item.external_urls?.spotify,
-		albumArt: data.item.album?.images?.[2]?.url ?? data.item.album?.images?.[0]?.url,
-		progressMs: data.progress_ms ?? 0,
-		durationMs: data.item.duration_ms ?? 0
-	};
+	return { available: true, items };
+}
+
+export async function getRecentlyPlayed(): Promise<RecentlyPlayed> {
+	const now = Date.now();
+	if (recentCache && now - recentCache.fetchedAt < RECENT_CACHE_MS) return recentCache.data;
+
+	if (!recentInFlight) {
+		recentInFlight = fetchRecentlyPlayed()
+			.then((data) => {
+				recentCache = { data, fetchedAt: Date.now() };
+				return data;
+			})
+			.finally(() => {
+				recentInFlight = null;
+			});
+	}
+	return recentInFlight;
 }

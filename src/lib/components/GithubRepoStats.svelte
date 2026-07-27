@@ -39,14 +39,14 @@
 		let cancelled = false;
 		status = 'loading';
 
-		fetch(`https://api.github.com/repos/${path}`)
+		fetch(`/api/github/repo-stats?repo=${encodeURIComponent(path)}`)
 			.then((res) => {
 				if (!res.ok) throw new Error(`GitHub API returned ${res.status}`);
 				return res.json();
 			})
-			.then((data: { stargazers_count: number; language: string | null; pushed_at: string }) => {
+			.then((data: RepoStats) => {
 				if (cancelled) return;
-				stats = { stars: data.stargazers_count, language: data.language, pushedAt: data.pushed_at };
+				stats = data;
 				status = 'ready';
 			})
 			.catch(() => {

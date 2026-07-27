@@ -38,11 +38,13 @@ Restricted to a single GitHub account — the one matching `site.githubUsername`
 
 See [auth.md](auth.md) for the full login flow.
 
+These same two values are also reused (as Basic Auth, not part of the login flow) to raise the GitHub REST API's unauthenticated rate limit from 60/hour to 5,000/hour for the GitHub activity/repo-stats widgets — see [integrations.md](integrations.md). If they're unset, those widgets still work, just capped at the lower unauthenticated limit.
+
 ## Spotify "now playing" + listening history
 
 ### `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` / `SPOTIFY_REFRESH_TOKEN`
 
-Powers [SpotifyWidget.svelte](../src/lib/components/SpotifyWidget.svelte). Shows "Spotify not connected" if unset.
+Powers the recently-played history section of [SpotifyWidget.svelte](../src/lib/components/SpotifyWidget.svelte) and `/listens` live scrobbling — not the live "now playing" track itself, which comes from Lanyard/Discord presence instead (see [integrations.md](integrations.md)). Shows "Spotify not connected" (recently-played section hidden) if unset.
 
 1. Create an app at https://developer.spotify.com/dashboard.
 2. `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` come from that app.

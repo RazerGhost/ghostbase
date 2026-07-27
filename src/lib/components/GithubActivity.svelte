@@ -1,6 +1,4 @@
 <script lang="ts">
-	import { site } from '$lib/config';
-
 	let { limit = 5 }: { limit?: number } = $props();
 
 	interface GithubEvent {
@@ -36,17 +34,14 @@
 
 		commitsByEvent[event.id] = 'loading';
 		try {
-			const res = await fetch(
-				`https://api.github.com/repos/${event.repo.name}/compare/${event.payload!.before}...${event.payload!.head}`
-			);
+			const params = new URLSearchParams({
+				repo: event.repo.name,
+				base: event.payload!.before!,
+				head: event.payload!.head!
+			});
+			const res = await fetch(`/api/github/commits?${params}`);
 			if (!res.ok) throw new Error(`GitHub API returned ${res.status}`);
-			const body = await res.json();
-			commitsByEvent[event.id] = (body.commits ?? [])
-				.map((c: { sha: string; commit: { message: string } }) => ({
-					sha: c.sha,
-					message: c.commit.message.split('\n')[0]
-				}))
-				.reverse();
+			commitsByEvent[event.id] = await res.json();
 		} catch {
 			commitsByEvent[event.id] = 'error';
 		}
@@ -85,7 +80,7 @@
 	$effect(() => {
 		let cancelled = false;
 
-		fetch(`https://api.github.com/users/${site.githubUsername}/events/public?per_page=${limit}`)
+		fetch(`/api/github/activity?limit=${limit}`)
 			.then((res) => {
 				if (!res.ok) throw new Error(`GitHub API returned ${res.status}`);
 				return res.json();

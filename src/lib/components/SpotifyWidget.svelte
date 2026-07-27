@@ -3,19 +3,7 @@
 	import ExternalLink from '@lucide/svelte/icons/external-link';
 	import Minus from '@lucide/svelte/icons/minus';
 	import History from '@lucide/svelte/icons/history';
-
-	interface SpotifyState {
-		configured: boolean;
-		playing: boolean;
-		track?: string;
-		artist?: string;
-		url?: string;
-		albumArt?: string;
-		progressMs?: number;
-		durationMs?: number;
-		fetchedAt?: number;
-		error?: boolean;
-	}
+	import { useLanyard } from '$lib/stores/lanyard.svelte';
 
 	interface RecentItem {
 		track: string;
@@ -55,15 +43,14 @@
 		return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 	}
 
-	let data = $state<SpotifyState | null>(null);
+	const lanyard = useLanyard();
 	let recent = $state<RecentItem[]>([]);
 	let recentAvailable = $state(false);
 	let expanded = $state(false);
 	let now = $state(Date.now());
 	let listenedMsToday = $state(loadListenedMs());
 
-	let pollTimeout: ReturnType<typeof setTimeout>;
-	let lastTrack = '';
+	let lastTrackId = '';
 
 	async function pollRecent() {
 		try {
@@ -76,66 +63,53 @@
 		}
 	}
 
-	async function poll() {
-		try {
-			const res = await fetch('/api/spotify');
-			data = await res.json();
-		} catch {
-			data = { configured: true, playing: false, error: true };
-		}
-
-		if (data?.track && data.track !== lastTrack) {
-			if (lastTrack) pollRecent(); // a track just finished — refresh history
-			lastTrack = data.track;
-		}
-
-		// Poll again right as the current track should end (clamped so we
-		// never hammer the API, but also never sit stale for a full 30s after
-		// a skip/track change like the old flat interval did).
-		clearTimeout(pollTimeout);
-		let delay = 30_000;
-		if (data?.playing && data.durationMs && data.progressMs != null) {
-			const remaining = data.durationMs - data.progressMs;
-			delay = Math.min(30_000, Math.max(4_000, remaining + 1_500));
-		}
-		pollTimeout = setTimeout(poll, delay);
-	}
+	// Currently-playing state comes from Lanyard (Discord's Rich Presence
+	// gateway push, relayed by lanyard.rest) instead of polling Spotify's own
+	// API — see stores/lanyard.svelte.ts for why. "Recently played" history
+	// still needs a real Spotify scope Lanyard doesn't expose, so that part
+	// keeps hitting /api/spotify/recent, just at a much lower rate (60s here,
+	// vs. the old currently-playing poll which tightened down to every 4s).
+	const spotify = $derived(lanyard.data?.listening_to_spotify ? lanyard.data.spotify : null);
+	const playing = $derived(Boolean(spotify));
+	const track = $derived(spotify?.song);
+	const artist = $derived(spotify?.artist);
+	const albumArt = $derived(spotify?.album_art_url);
+	const trackUrl = $derived(spotify ? `https://open.spotify.com/track/${spotify.track_id}` : undefined);
+	const durationMs = $derived(spotify ? spotify.timestamps.end - spotify.timestamps.start : undefined);
 
 	$effect(() => {
-		poll();
+		lanyard.start();
 		pollRecent();
 		const recentInterval = setInterval(pollRecent, 60_000);
-
-		// setInterval-based polling gets throttled in background tabs, which
-		// is the other half of "doesn't refresh" — catch up as soon as the
-		// tab is visible/focused again instead of waiting for the next tick.
-		const onVisible = () => {
-			if (document.visibilityState === 'visible') poll();
-		};
-		document.addEventListener('visibilitychange', onVisible);
-		window.addEventListener('focus', onVisible);
-
 		return () => {
-			clearTimeout(pollTimeout);
+			lanyard.stop();
 			clearInterval(recentInterval);
-			document.removeEventListener('visibilitychange', onVisible);
-			window.removeEventListener('focus', onVisible);
 		};
+	});
+
+	// A track change (as observed via Lanyard) means the previous one just
+	// finished — refresh recently-played history to pick it up.
+	$effect(() => {
+		const id = spotify?.track_id ?? '';
+		if (id && id !== lastTrackId) {
+			if (lastTrackId) pollRecent();
+			lastTrackId = id;
+		}
 	});
 
 	// Collapse the expanded card back to the pill if playback stops.
 	$effect(() => {
-		if (!data?.playing) expanded = false;
+		if (!playing) expanded = false;
 	});
 
-	// Local 1s ticker while playing: drives the progress bar between polls
-	// and accumulates today's listening time, without hitting the API.
+	// Local 1s ticker while playing: drives the progress bar between Lanyard
+	// polls and accumulates today's listening time, without hitting any API.
 	// listenedDate tracks which day the counter belongs to — a tab left open
 	// across midnight resets to zero instead of carrying yesterday's total
 	// into the new day's localStorage key.
 	let listenedDate = dateKey();
 	$effect(() => {
-		if (!data?.playing) return;
+		if (!playing) return;
 		let last = Date.now();
 		const id = setInterval(() => {
 			const current = Date.now();
@@ -152,33 +126,33 @@
 		return () => clearInterval(id);
 	});
 
+	// Computed straight from Lanyard's absolute start/end timestamps rather
+	// than "progress at last fetch + elapsed", so it stays accurate regardless
+	// of how stale the last Lanyard poll is.
 	const localProgressMs = $derived.by(() => {
-		if (!data?.playing || !data.durationMs || data.fetchedAt == null) return data?.progressMs ?? 0;
-		const elapsed = Math.max(0, now - data.fetchedAt);
-		return Math.min(data.durationMs, (data.progressMs ?? 0) + elapsed);
+		if (!spotify || durationMs == null) return 0;
+		return Math.min(durationMs, Math.max(0, now - spotify.timestamps.start));
 	});
 
-	const progressPct = $derived(
-		data?.durationMs ? Math.min(100, (localProgressMs / data.durationMs) * 100) : 0
-	);
+	const progressPct = $derived(durationMs ? Math.min(100, (localProgressMs / durationMs) * 100) : 0);
 </script>
 
-{#if data?.playing && data.track}
+{#if playing && track}
 	<div class="fixed bottom-6 left-6 z-10 flex flex-col items-start gap-2" data-hero-reveal="0">
 		{#if expanded}
 			<div
 				class="card w-80 rounded-lg border border-border bg-surface/80 p-3 shadow-[var(--shadow-card-hover)] backdrop-blur-md"
 			>
 				<div class="flex items-center gap-3">
-					{#if data.albumArt}
-						<img src={data.albumArt} alt="" class="h-12 w-12 shrink-0 rounded-md object-cover" />
+					{#if albumArt}
+						<img src={albumArt} alt="" class="h-12 w-12 shrink-0 rounded-md object-cover" />
 					{/if}
 					<div class="min-w-0 flex-1">
-						<p class="truncate text-sm font-medium text-white">{data.track}</p>
-						<p class="truncate text-xs text-dim">{data.artist}</p>
+						<p class="truncate text-sm font-medium text-white">{track}</p>
+						<p class="truncate text-xs text-dim">{artist}</p>
 					</div>
 					<a
-						href={data.url}
+						href={trackUrl}
 						target="_blank"
 						rel="noreferrer"
 						aria-label="Open in Spotify"
@@ -196,7 +170,7 @@
 					</button>
 				</div>
 
-				{#if data.durationMs}
+				{#if durationMs}
 					<div class="mt-3">
 						<div class="h-1 w-full overflow-hidden rounded-full bg-surface-2">
 							<div
@@ -206,7 +180,7 @@
 						</div>
 						<div class="mt-1 flex justify-between text-[11px] text-dim">
 							<span>{formatClock(localProgressMs)}</span>
-							<span>{formatClock(data.durationMs)}</span>
+							<span>{formatClock(durationMs)}</span>
 						</div>
 					</div>
 				{/if}
@@ -249,13 +223,13 @@
 		{:else}
 			<button
 				type="button"
-				aria-label={`Now playing: ${data.track} by ${data.artist}. Click to expand.`}
+				aria-label={`Now playing: ${track} by ${artist}. Click to expand.`}
 				class="card flex items-center gap-2 rounded-full border border-border bg-surface/80 py-1.5 pr-4 pl-1.5 shadow-[var(--shadow-card-hover)] backdrop-blur-md transition-colors hover:border-primary"
 				onclick={() => (expanded = true)}
 			>
 				<span class="relative h-8 w-8 shrink-0">
-					{#if data.albumArt}
-						<img src={data.albumArt} alt="" class="h-8 w-8 rounded-full object-cover" />
+					{#if albumArt}
+						<img src={albumArt} alt="" class="h-8 w-8 rounded-full object-cover" />
 					{:else}
 						<span class="grid h-8 w-8 place-items-center rounded-full bg-surface-2">
 							<Music size={14} class="text-primary" aria-hidden="true" />
@@ -268,7 +242,7 @@
 						<span class="h-2 w-2 animate-pulse rounded-full bg-primary"></span>
 					</span>
 				</span>
-				<span class="max-w-[9rem] truncate text-xs font-medium text-white">{data.track}</span>
+				<span class="max-w-[9rem] truncate text-xs font-medium text-white">{track}</span>
 			</button>
 		{/if}
 	</div>

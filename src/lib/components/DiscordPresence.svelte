@@ -1,39 +1,16 @@
 <script lang="ts">
-	import { site } from '$lib/config';
+	import { useLanyard, type LanyardData } from '$lib/stores/lanyard.svelte';
 	import Monitor from '@lucide/svelte/icons/monitor';
 	import Smartphone from '@lucide/svelte/icons/smartphone';
 	import Globe from '@lucide/svelte/icons/globe';
 
 	let { compact = false, activityOnly = false }: { compact?: boolean; activityOnly?: boolean } = $props();
 
-	interface LanyardActivity {
-		name: string;
-		type: number;
-		state?: string;
-		details?: string;
-		application_id?: string;
-		emoji?: { name: string; id?: string };
-		timestamps?: { start?: number; end?: number };
-		assets?: {
-			large_image?: string;
-			large_text?: string;
-			small_image?: string;
-			small_text?: string;
-		};
-	}
-
-	interface LanyardData {
-		discord_status: 'online' | 'idle' | 'dnd' | 'offline';
-		discord_user: { id: string; username: string; global_name: string | null; avatar: string | null };
-		activities: LanyardActivity[];
-		active_on_discord_desktop: boolean;
-		active_on_discord_mobile: boolean;
-		active_on_discord_web: boolean;
-	}
-
-	let status = $state<'loading' | 'ready' | 'error'>('loading');
-	let data = $state<LanyardData | null>(null);
+	const lanyard = useLanyard();
 	let now = $state(Date.now());
+
+	const status = $derived(lanyard.status);
+	const data = $derived(lanyard.data);
 
 	const statusColor: Record<LanyardData['discord_status'], string> = {
 		online: 'bg-primary',
@@ -49,25 +26,11 @@
 		offline: 'Offline'
 	};
 
-	async function poll() {
-		try {
-			const res = await fetch(`https://api.lanyard.rest/v1/users/${site.discordUserId}`);
-			if (!res.ok) throw new Error(`Lanyard returned ${res.status}`);
-			const json = await res.json();
-			if (!json.success) throw new Error('Lanyard: user not found in cache');
-			data = json.data;
-			status = 'ready';
-		} catch {
-			status = 'error';
-		}
-	}
-
 	$effect(() => {
-		poll();
-		const interval = setInterval(poll, 30_000);
+		lanyard.start();
 		const tick = setInterval(() => (now = Date.now()), 1000);
 		return () => {
-			clearInterval(interval);
+			lanyard.stop();
 			clearInterval(tick);
 		};
 	});
