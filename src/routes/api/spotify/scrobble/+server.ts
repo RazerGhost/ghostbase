@@ -6,22 +6,13 @@ import { insertPlays } from '$lib/server/spotify-history-db';
 import type { PlayRecord } from '$lib/server/spotify-history-db';
 import type { RequestHandler } from './$types';
 
-// Live scrobbling: meant to be hit on a schedule (e.g. every 15-30 min, via
-// Coolify's cron or a GitHub Actions cron) to top up spotify-history.db
-// between manual exports. Spotify's recently-played endpoint only returns
-// the last 50 plays, so a gap longer than the poll interval loses history
-// permanently — this doesn't replace periodic re-exports, it just keeps the
-// gap small.
-//
+// Meant to run on a schedule to top up spotify-history.db between manual
+// exports — Spotify's recently-played endpoint only returns the last 50
+// plays, so gaps longer than the poll interval are otherwise lost.
 // insertPlays is idempotent on (played_at, spotify_uri, ms_played), so
-// polling more often than necessary, or overlapping the next export's
-// range, is safe.
-//
-// Gated by SPOTIFY_SCROBBLE_SECRET since this endpoint has a side effect
-// (writes to the DB) and would otherwise be publicly triggerable. Prefer the
-// `Authorization: Bearer <secret>` header — query strings end up in
-// proxy/access logs. `?secret=` is still accepted so existing cron entries
-// keep working.
+// overlapping polls are safe. Prefer the `Authorization: Bearer <secret>`
+// header over `?secret=`, which leaks into proxy/access logs — still
+// accepted so existing cron entries keep working.
 export const GET: RequestHandler = async ({ url, request }) => {
 	const secret = env.SPOTIFY_SCROBBLE_SECRET;
 	if (!secret) error(503, 'Scrobbling not configured');

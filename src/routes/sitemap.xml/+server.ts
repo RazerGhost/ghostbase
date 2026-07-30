@@ -6,11 +6,9 @@ import type { RequestHandler } from './$types';
 const STATIC_ROUTES = ['/', '/projects', '/devlog', '/gear', '/watchlist', '/listens'];
 
 function url(loc: string, date?: string): string {
-	// Frontmatter dates come back from gray-matter as parsed Date objects
-	// (via js-yaml), stringified inconsistently upstream — normalize to
-	// YYYY-MM-DD (W3C datetime) here rather than trusting the input format.
-	// An unparseable date just drops <lastmod> for that one URL instead of
-	// toISOString() throwing and 500ing the whole sitemap.
+	// Frontmatter dates arrive as inconsistently-stringified Date objects —
+	// normalized to YYYY-MM-DD here. An unparseable date just drops
+	// <lastmod> for that URL instead of throwing and 500ing the sitemap.
 	const parsed = date ? new Date(date) : null;
 	const lastmod =
 		parsed && !Number.isNaN(parsed.getTime()) ? parsed.toISOString().slice(0, 10) : undefined;

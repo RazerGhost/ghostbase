@@ -508,11 +508,9 @@
 		}
 	}
 
-	// IP-based lookup — coarser (city-level, not GPS-precise) but instant and
-	// permission-free, so it's used as the fallback whenever the browser's
-	// Geolocation API is denied, unavailable, or just times out (which in
-	// practice was the common case — no prompt ever getting a real GPS/network
-	// fix back within a few seconds).
+	// Coarser (city-level) than GPS but instant and permission-free — used as
+	// the fallback since the Geolocation API being denied/unavailable/slow was
+	// the common case in practice.
 	async function fetchWeatherByIp(): Promise<boolean> {
 		try {
 			const res = await fetch('https://ipwho.is/');
@@ -949,13 +947,10 @@
 		return clampPosition(defaultPosition(slot.key), slot.key);
 	}
 
-	// Resizing a merged card that has a "spanning" cell (one with a row of
-	// other cells docked directly below it — e.g. a wide card over 2-3
-	// narrower cards) also needs to update that cell's colSpan and repack
-	// the row underneath into the new width — the one case the spec calls
-	// out where sibling relayout is expected to happen automatically. Maps
-	// the new pixel width to an approximate column count so a continuous
-	// drag-resize still produces a sensible integer grid.
+	// Resizing a merged card that has a "spanning" cell (a wide card over 2-3
+	// narrower cells docked below it) also repacks that row into the new
+	// width, mapping pixel width to an approximate column count so a
+	// continuous drag-resize still produces a sensible integer grid.
 	function repackSpanningCellsFor(slot: Slot, width: number) {
 		if (!slot.group) return;
 		const group = slot.group;
@@ -1136,11 +1131,9 @@
 	}
 
 	// Docks the dragged slot onto a specific edge of a specific cell inside
-	// the target slot — this is the grid-aware replacement for the old
-	// "drop anywhere on the target card" merge. Any prior group membership
-	// for the dragged slot's ids is dissolved first, so docking a widget
-	// that was already linked elsewhere moves it rather than doubling it up.
-	// A multi-widget source (itself already a merged card) has each of its
+	// the target slot. Any prior group membership for the dragged slot's ids
+	// is dissolved first, so docking a widget already linked elsewhere moves
+	// it rather than doubling it up. A multi-widget source has each of its
 	// ids inserted at the same edge in turn, so the whole card comes along.
 	function mergeAtEdge(source: Slot, targetCellId: WidgetId, edge: DockEdge) {
 		const targetSlot = slots.find((s) => s.ids.includes(targetCellId));
@@ -1193,24 +1186,17 @@
 		return 10 + (index === -1 ? 0 : index + 1);
 	}
 
-	// Single pointer-based gesture drives both freeform positioning and
-	// merging — native HTML5 drag-and-drop (the previous approach)
-	// unreliably lost the drag whenever it started over a link, button, or
-	// text input inside a widget (the browser hijacks it into a link/text
-	// drag instead). Grabbing the grip now always works the same way
-	// regardless of what's under the cursor: the card follows the pointer
-	// (activeDragKey drives the "lifted" look below); release it over
-	// another card to merge the two into one combined card; release
-	// anywhere else and it just stays at the drop point.
+	// A single pointer-based gesture drives both freeform positioning and
+	// merging — native HTML5 drag-and-drop loses the drag whenever it starts
+	// over a link, button, or text input (the browser hijacks it into a
+	// link/text drag instead).
 	let activeDragKey = $state<string | null>(null);
 
-	// document.elementFromPoint would otherwise always hit the dragged card
-	// itself (it's rendered right under the cursor) — hiding it from
-	// hit-testing for the duration of the lookup reveals whatever's beneath.
-	// Resolves down to the specific sub-widget cell (not just the shared
-	// container) so dock-zone detection can test against that cell's own
-	// edges — the same cell can be tested whether it's a standalone card or
-	// one member of an already-merged one.
+	// Hides the dragged card from hit-testing for the lookup, since
+	// document.elementFromPoint would otherwise always hit it (it's rendered
+	// right under the cursor). Resolves to the specific sub-widget cell, not
+	// just the shared container, so dock-zone detection can test that cell's
+	// own edges.
 	function dockTargetUnderPoint(
 		x: number,
 		y: number,
@@ -1231,26 +1217,13 @@
 		return edge ? { cellId, edge } : null;
 	}
 
-	// Pointer/touch tracking itself is handled by @dnd-kit/svelte's
-	// DragDropProvider + createDraggable (see the grip handle's
-	// draggable.attachHandle in the template) — replaces the old hand-rolled
-	// window pointermove/pointerup listeners. Everything domain-specific
-	// (dock-edge detection, merging, z-order, position persistence) is
-	// unchanged, just fed from dnd-kit's drag events instead of raw
-	// PointerEvents.
-	//
-	// The live visual drag (the card following the pointer) is left entirely
-	// to dnd-kit's own default "feedback" behavior, which applies a CSS
-	// transform to the dragged element for the duration of the gesture —
-	// floatPositions is deliberately NOT updated on every dragmove. Doing
-	// both at once (our own left/top *and* dnd-kit's transform, both
-	// independently tracking the pointer) stacks and sends the card flying
-	// off far from the cursor. dragmove is only used to keep dragOverEdge
-	// current for the dock-zone highlight; the actual resting position is
-	// computed once, from the cumulative transform, when the drag ends —
-	// dragOrigin is a plain (non-reactive) var, only ever read/written by
-	// these three handlers in sequence for a single in-flight drag, so it
-	// doesn't need to be $state.
+	// floatPositions is deliberately NOT updated on every dragmove — dnd-kit's
+	// own default feedback already applies a CSS transform to follow the
+	// pointer, so doing both would stack and send the card flying off the
+	// cursor. dragmove only tracks dragOverEdge for the dock-zone highlight;
+	// the resting position is computed once, from the cumulative transform,
+	// in handleDragEnd. dragOrigin is a plain var (not $state) — only
+	// read/written by these three handlers for one in-flight drag.
 	let dragOrigin: FloatPosition | null = null;
 
 	function slotForDragId(id: string | number | undefined | null): Slot | undefined {
@@ -1933,15 +1906,10 @@
 				{@const draggable = createDraggable({
 					id: slot.key,
 					disabled: !dragEnabled || isNarrowViewport,
-					// We commit the card's real resting position to floatPositions
-					// the instant the drag ends (see handleDragEnd) — dnd-kit's
-					// own default "drop animation" then tries to separately
-					// animate its CSS transform back to zero relative to the
-					// element's *old* left/top, fighting our instant jump to the
-					// new left/top and producing a fly-off/pop-in glitch. Disable
-					// just that animation; the live drag-follow feedback itself
-					// (which this doesn't touch) is what makes the card track the
-					// pointer during the gesture.
+					// Disables only the drop-animation: it fights our instant
+					// floatPositions commit in handleDragEnd, animating back to
+					// the old left/top and causing a fly-off/pop-in glitch. Live
+					// drag-follow feedback is untouched.
 					plugins: [Feedback.configure({ dropAnimation: null })]
 				})}
 				<div

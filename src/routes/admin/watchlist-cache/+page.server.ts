@@ -29,12 +29,10 @@ export const actions: Actions = {
 		return { success: true };
 	},
 
-	// Tops up every row missing a runtime — sequential with a short delay
-	// between calls so a full-library backfill doesn't hammer Simkl's API.
-	// A successful fetch doesn't guarantee a runtime comes back: some titles
-	// genuinely have no runtime in Simkl's own database, so re-fetching them
-	// re-stores null. Track that separately from actual fetch failures so the
-	// summary doesn't imply "fixed" when the source data just isn't there.
+	// Sequential with a short delay to avoid hammering Simkl's API. A
+	// successful fetch can still legitimately return no runtime (some titles
+	// just don't have one in Simkl), so that's tracked separately from
+	// actual failures.
 	refreshMissing: async () => {
 		const targets = listAllDetails().filter((row) => row.runtime == null);
 		let filled = 0;

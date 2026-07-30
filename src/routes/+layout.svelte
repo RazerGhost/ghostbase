@@ -10,13 +10,10 @@
 
 	let { data, children }: LayoutProps = $props();
 
-	// The notes graph is a full-bleed app view with its own canvas, dock, and
-	// jump-to-note palette — the marketing nav/footer chrome doesn't fit a
-	// fixed-viewport canvas (it pushed total page height past 100vh, causing
-	// the whole page to scroll instead of just the canvas), and the global
-	// command palette's Ctrl+K would otherwise fight the notes page's own.
-	// /newtab is meant to stand in for the browser's own new-tab page, so the
-	// site nav/footer chrome doesn't belong there either.
+	// /notes is a full-bleed app view — its fixed-viewport canvas and own
+	// Ctrl+K palette don't coexist with the site chrome (pushed page height
+	// past 100vh, palette conflicts). /newtab stands in for the browser's
+	// own new-tab page, so chrome doesn't belong there either.
 	const isFullBleed = $derived(page.url.pathname === '/notes' || page.url.pathname === '/newtab');
 </script>
 

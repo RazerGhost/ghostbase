@@ -167,9 +167,8 @@
         return `${Math.round(hours / 24)} days ago`;
     }
 
-    // Always pulls from TV/movies regardless of which tab is active — kept
-    // separate from the anime library rather than a shared "surprise me
-    // from whatever tab you're on", per explicit request.
+    // Always pulls from TV/movies regardless of which tab is active —
+    // deliberately not shared with the anime library.
     function surpriseMe() {
         const pool = data.planToWatch.filter(
             (item) => item.mediaType !== "anime",
