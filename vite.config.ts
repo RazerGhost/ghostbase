@@ -8,8 +8,9 @@ export default defineConfig({
 		// These ship raw, uncompiled .svelte files as their icon components —
 		// SSR needs Vite to run them through vite-plugin-svelte rather than
 		// externalizing them straight to Node's ESM loader (which can't
-		// handle .svelte files).
-		noExternal: ['@lucide/svelte', '@icons-pack/svelte-simple-icons']
+		// handle .svelte files). @dnd-kit/svelte's DragDropProvider/DragOverlay
+		// are the same story.
+		noExternal: ['@lucide/svelte', '@icons-pack/svelte-simple-icons', '@dnd-kit/svelte']
 	},
 	test: {
 		// Pure string-transform functions (markdown post-processing), not

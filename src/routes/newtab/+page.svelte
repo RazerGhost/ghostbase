@@ -29,6 +29,8 @@
 	import MoreVertical from '@lucide/svelte/icons/more-vertical';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import { enhance } from '$app/forms';
+	import { DragDropProvider, createDraggable } from '@dnd-kit/svelte';
+	import { Feedback } from '@dnd-kit/dom';
 	import { navLinks } from '$lib/config';
 	import {
 		getFloatPosition,
@@ -462,7 +464,7 @@
 	}
 
 	// --- Weather (client-side, no API key — Open-Meteo) -------------------
-	type WeatherState = { tempF: number; code: number } | 'denied' | 'unavailable' | 'timeout' | 'error' | null;
+	type WeatherState = { tempC: number; code: number } | 'denied' | 'unavailable' | 'timeout' | 'error' | null;
 	let weather = $state<WeatherState>(null);
 
 	// "Today 3:00 PM" / "Tomorrow" (all-day) / "Jul 26" for anything further out.
@@ -495,11 +497,11 @@
 	async function fetchWeather(latitude: number, longitude: number): Promise<boolean> {
 		try {
 			const res = await fetch(
-				`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&temperature_unit=fahrenheit`
+				`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code`
 			);
 			if (!res.ok) return false;
 			const body = await res.json();
-			weather = { tempF: Math.round(body.current.temperature_2m), code: body.current.weather_code };
+			weather = { tempC: Math.round(body.current.temperature_2m), code: body.current.weather_code };
 			return true;
 		} catch {
 			return false;
@@ -915,13 +917,15 @@
 	// wider window, then reopened on a narrower one) still renders fully
 	// on-screen, but reverts to its real saved spot the moment the viewport
 	// is wide enough again rather than being permanently rewritten here.
-	function clampPosition(pos: FloatPosition): FloatPosition {
+	function clampPosition(pos: FloatPosition, key?: string): FloatPosition {
 		const width = Math.min(pos.width, Math.max(CARD_WIDTH_MIN, viewportWidth - CARD_GAP * 2));
 		const maxX = Math.max(CARD_GAP, viewportWidth - width - CARD_GAP);
-		// No equivalent max-height concept for a card (height is content-sized,
-		// not stored) — just keep its top edge from drifting so far down the
-		// header/grip becomes unreachable.
-		const maxY = Math.max(CARD_GAP, viewportHeight - 60);
+		// Keeps the card's bottom edge within the same CARD_GAP margin as the
+		// other three sides, using its real measured height once known
+		// (falling back to the same generous estimate the initial packing
+		// pass uses for a not-yet-measured card — see measuredHeights above).
+		const height = (key ? measuredHeights[key] : undefined) ?? CARD_HEIGHT_FALLBACK;
+		const maxY = Math.max(CARD_GAP, viewportHeight - height - CARD_GAP);
 		return {
 			x: Math.min(Math.max(pos.x, CARD_GAP), maxX),
 			y: Math.min(Math.max(pos.y, CARD_GAP), maxY),
@@ -936,13 +940,13 @@
 	// since an untouched card has no entry there yet.
 	function currentPositionFor(slot: Slot): FloatPosition {
 		const saved = floatPositions[slot.key];
-		if (saved) return clampPosition(saved);
+		if (saved) return clampPosition(saved, slot.key);
 		const el = widgetEls[slot.key];
 		if (el) {
 			const rect = el.getBoundingClientRect();
-			return clampPosition({ x: rect.left, y: rect.top, width: rect.width });
+			return clampPosition({ x: rect.left, y: rect.top, width: rect.width }, slot.key);
 		}
-		return clampPosition(defaultPosition(slot.key));
+		return clampPosition(defaultPosition(slot.key), slot.key);
 	}
 
 	// Resizing a merged card that has a "spanning" cell (one with a row of
@@ -1227,61 +1231,73 @@
 		return edge ? { cellId, edge } : null;
 	}
 
-	function startDrag(event: PointerEvent, slot: Slot) {
-		if (!dragEnabled) return;
-		event.preventDefault();
+	// Pointer/touch tracking itself is handled by @dnd-kit/svelte's
+	// DragDropProvider + createDraggable (see the grip handle's
+	// draggable.attachHandle in the template) — replaces the old hand-rolled
+	// window pointermove/pointerup listeners. Everything domain-specific
+	// (dock-edge detection, merging, z-order, position persistence) is
+	// unchanged, just fed from dnd-kit's drag events instead of raw
+	// PointerEvents.
+	//
+	// The live visual drag (the card following the pointer) is left entirely
+	// to dnd-kit's own default "feedback" behavior, which applies a CSS
+	// transform to the dragged element for the duration of the gesture —
+	// floatPositions is deliberately NOT updated on every dragmove. Doing
+	// both at once (our own left/top *and* dnd-kit's transform, both
+	// independently tracking the pointer) stacks and sends the card flying
+	// off far from the cursor. dragmove is only used to keep dragOverEdge
+	// current for the dock-zone highlight; the actual resting position is
+	// computed once, from the cumulative transform, when the drag ends —
+	// dragOrigin is a plain (non-reactive) var, only ever read/written by
+	// these three handlers in sequence for a single in-flight drag, so it
+	// doesn't need to be $state.
+	let dragOrigin: FloatPosition | null = null;
 
-		const origin = currentPositionFor(slot);
-		const hadPosition = !!floatPositions[slot.key];
-		floatPositions = { ...floatPositions, [slot.key]: origin };
+	function slotForDragId(id: string | number | undefined | null): Slot | undefined {
+		if (id == null) return undefined;
+		return slots.find((s) => s.key === id);
+	}
+
+	function handleDragStart(event: { operation: { source: { id: string | number } | null } }) {
+		const slot = slotForDragId(event.operation.source?.id);
+		if (!slot) return;
+
+		dragOrigin = currentPositionFor(slot);
 		activeDragKey = slot.key;
 		bringToFront(slot.key);
+	}
 
-		const startX = event.clientX;
-		const startY = event.clientY;
-		let moved = false;
+	function handleDragMove(event: {
+		operation: { source: { id: string | number } | null; position: { current: { x: number; y: number } } };
+	}) {
+		const slot = slotForDragId(event.operation.source?.id);
+		if (!slot || !dragOrigin) return;
 
-		function onMove(e: PointerEvent) {
-			moved = true;
-			floatPositions = {
-				...floatPositions,
-				[slot.key]: {
-					x: origin.x + (e.clientX - startX),
-					y: origin.y + (e.clientY - startY),
-					width: origin.width
-				}
-			};
-			dragOverEdge = dockTargetUnderPoint(e.clientX, e.clientY, slot.key);
+		const pos = event.operation.position.current;
+		dragOverEdge = dockTargetUnderPoint(pos.x, pos.y, slot.key);
+	}
+
+	function handleDragEnd(event: {
+		operation: { source: { id: string | number } | null; transform: { x: number; y: number } };
+		canceled: boolean;
+	}) {
+		const slot = slotForDragId(event.operation.source?.id);
+		const target = dragOverEdge;
+		const origin = dragOrigin;
+		activeDragKey = null;
+		dragOverEdge = null;
+		dragOrigin = null;
+		if (!slot || !origin || event.canceled) return;
+
+		const { x, y } = event.operation.transform;
+		const final: FloatPosition = { x: origin.x + x, y: origin.y + y, width: origin.width };
+		floatPositions = { ...floatPositions, [slot.key]: final };
+
+		if (target) {
+			mergeAtEdge(slot, target.cellId, target.edge);
+		} else {
+			setFloatPosition(slot.key, final);
 		}
-		function onUp() {
-			window.removeEventListener('pointermove', onMove);
-			window.removeEventListener('pointerup', onUp);
-			window.removeEventListener('pointercancel', onUp);
-			activeDragKey = null;
-
-			const target = dragOverEdge;
-			dragOverEdge = null;
-
-			if (moved && target) {
-				mergeAtEdge(slot, target.cellId, target.edge);
-			} else if (moved) {
-				const final = floatPositions[slot.key];
-				if (final) setFloatPosition(slot.key, final);
-			} else if (!hadPosition) {
-				// Just a click, not a drag — undo the provisional position we
-				// set at the start so a plain click on the grip is a no-op.
-				const reverted = { ...floatPositions };
-				delete reverted[slot.key];
-				floatPositions = reverted;
-			}
-		}
-		// Listening on window (rather than the small grip handle) means the
-		// drag keeps tracking even once the pointer leaves the handle's tiny
-		// hit area — no pointer capture needed, and pointerup/pointercancel
-		// are always removed in pairs so listeners can't stack across drags.
-		window.addEventListener('pointermove', onMove);
-		window.addEventListener('pointerup', onUp);
-		window.addEventListener('pointercancel', onUp);
 	}
 
 	// Double-clicking a grip handle resets that card back to its
@@ -1758,7 +1774,7 @@
 					Retry
 				</button>
 			{:else}
-				<p class="text-xl font-semibold text-white">{weather.tempF}°F</p>
+				<p class="text-xl font-semibold text-white">{weather.tempC}°C</p>
 				<p class="text-sm text-white/60">{weatherLabel(weather.code)}</p>
 			{/if}
 		{:else if id === 'focus'}
@@ -1908,14 +1924,30 @@
 	     canvas doesn't work well on a touch screen, so widgetStyle instead
 	     returns normal-flow sizing and this wrapper becomes a real stacked
 	     list (see isNarrowViewport above). -->
+	<DragDropProvider onDragStart={handleDragStart} onDragMove={handleDragMove} onDragEnd={handleDragEnd}>
 	<div class={isNarrowViewport ? 'mx-auto mt-6 flex w-full max-w-md flex-col gap-3' : ''}>
 		{#each slots as slot (slot.key)}
 			{@const visibleIds = slot.ids.filter(widgetVisible)}
 			{#if visibleIds.length}
 				{@const cardLabel = visibleIds.map((id) => WIDGET_META[id].label).join(' + ')}
+				{@const draggable = createDraggable({
+					id: slot.key,
+					disabled: !dragEnabled || isNarrowViewport,
+					// We commit the card's real resting position to floatPositions
+					// the instant the drag ends (see handleDragEnd) — dnd-kit's
+					// own default "drop animation" then tries to separately
+					// animate its CSS transform back to zero relative to the
+					// element's *old* left/top, fighting our instant jump to the
+					// new left/top and producing a fly-off/pop-in glitch. Disable
+					// just that animation; the live drag-follow feedback itself
+					// (which this doesn't touch) is what makes the card track the
+					// pointer during the gesture.
+					plugins: [Feedback.configure({ dropAnimation: null })]
+				})}
 				<div
 					bind:this={widgetEls[slot.key]}
 					use:registerHeightObserver={slot.key}
+					{@attach draggable.attach}
 					onpointerdown={() => bringToFront(slot.key)}
 					data-slot-key={slot.key}
 					class={widgetClass(slot)}
@@ -1950,7 +1982,7 @@
 							<button
 								type="button"
 								class="cursor-grab touch-none text-white/30 hover:text-primary active:cursor-grabbing"
-								onpointerdown={(e) => startDrag(e, slot)}
+								{@attach draggable.attachHandle}
 								ondblclick={() => resetSlotPosition(slot)}
 								title="Drag anywhere to move, or onto another card's edge to dock them together. Double-click to reset position."
 								aria-label="Move {cardLabel} widget"
@@ -2091,6 +2123,7 @@
 			{/if}
 	{/each}
 	</div>
+	</DragDropProvider>
 </main>
 
 <!-- Fixed rather than in main's flow — main uses justify-center to keep the
