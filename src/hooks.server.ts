@@ -9,7 +9,7 @@ startSimklRefreshLoop();
 // run *before* layout load functions, so a layout redirect alone would let an
 // unauthenticated POST hit an action's side effects first. The per-endpoint
 // locals.user checks in +server.ts files stay as defense in depth.
-const PROTECTED_PREFIXES = ['/admin', '/spotify-import', '/newtab'];
+const PROTECTED_PREFIXES = ['/admin', '/spotify-import'];
 
 function isProtectedPath(pathname: string): boolean {
 	return PROTECTED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));

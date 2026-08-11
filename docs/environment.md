@@ -24,7 +24,7 @@ Rotating this value invalidates all existing sessions.
 
 Extended streaming history exports can be tens of MB across many files. adapter-node's default request body limit (512kb) will reject uploads above that at `/spotify-import` — raise it in Coolify's environment UI if your export is large. Accepts a byte count with an optional K/M/G suffix (e.g. `200M`) — **not** `0`, which SvelteKit treats as a 0-byte limit rather than "unlimited". Use the literal string `Infinity` to fully disable the limit. See [SvelteKit's adapter-node docs](https://svelte.dev/docs/kit/adapter-node#Environment-variables-BODY_SIZE_LIMIT).
 
-## GitHub login gate (`/admin`, `/spotify-import`, `/newtab`)
+## GitHub login gate (`/admin`, `/spotify-import`)
 
 ### `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`
 
@@ -107,23 +107,6 @@ Optional, directory holding images uploaded through the `/admin/media` library (
 ### `STATUS_DB_PATH`
 
 Optional — path to the SQLite file backing the homepage's "Right now" status card, edited at `/admin/status` ([status-db.ts](../src/lib/server/status-db.ts)). Defaults to `./data/status.db` if unset. Losing this is non-destructive — it just reverts to the hardcoded fallback in `status-db.ts`.
-
-## `/newtab` background photo
-
-The search query is configurable entirely from the settings (gear icon) panel on `/newtab` itself, persisted to `NEWTAB_SETTINGS_DB_PATH` below — no env var or redeploy needed to change it. The only env var here is the API connection itself.
-
-### `UNSPLASH_ACCESS_KEY`
-
-Optional — background photo for the personal `/newtab` dashboard ([unsplash.ts](../src/lib/server/unsplash.ts)). Falls back to a procedural gradient background if unset.
-
-1. Register an app at https://unsplash.com/oauth/applications (requires accepting the [Unsplash API Terms](https://unsplash.com/documentation), including its attribution and download-tracking requirements — both are already handled by `unsplash.ts` and the `/newtab` page, so no extra work needed on redeploy).
-2. `UNSPLASH_ACCESS_KEY` is that app's Access Key. Only the Access Key is needed — the Secret Key/OAuth flow is only for acting on behalf of an Unsplash *user* (login, uploads, likes), which this integration doesn't do.
-
-The photo is cached in-memory per server process for an hour (same pattern as the Spotify access token) to stay well under the demo tier's 50 requests/hour rate limit — every page view within that hour reuses the same photo rather than triggering a new API call. Changing the search query via the settings panel invalidates that cache immediately rather than waiting out the hour. Before the panel has ever been used, the query defaults to `minimal dark abstract`.
-
-### `NEWTAB_SETTINGS_DB_PATH`
-
-Optional — path to the SQLite file backing the `/newtab` settings panel ([newtab-settings.ts](../src/lib/server/newtab-settings.ts)). Defaults to `./data/newtab-settings.db` if unset. Losing this is non-destructive — it just reverts to the hardcoded default query.
 
 ## Backups
 

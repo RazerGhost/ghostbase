@@ -11,8 +11,7 @@ const run = promisify(execFile);
 const DBS: { name: string; envVar: string; defaultFile: string }[] = [
 	{ name: 'simkl-cache', envVar: 'SIMKL_CACHE_DB_PATH', defaultFile: 'simkl-cache.db' },
 	{ name: 'spotify-history', envVar: 'SPOTIFY_HISTORY_DB_PATH', defaultFile: 'spotify-history.db' },
-	{ name: 'status', envVar: 'STATUS_DB_PATH', defaultFile: 'status.db' },
-	{ name: 'newtab-settings', envVar: 'NEWTAB_SETTINGS_DB_PATH', defaultFile: 'newtab-settings.db' }
+	{ name: 'status', envVar: 'STATUS_DB_PATH', defaultFile: 'status.db' }
 ];
 
 function dbPath(envVar: string, defaultFile: string): string {
