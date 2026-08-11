@@ -41,7 +41,7 @@ function getDb(): Database.Database {
 	return db;
 }
 
-// Test-only escape hatch, mirrors notes.ts / simkl-cache.ts.
+// Test-only escape hatch, mirrors simkl-cache.ts.
 export function __setDbForTests(instance: Database.Database | null): void {
 	db = instance;
 }

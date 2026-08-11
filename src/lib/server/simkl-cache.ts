@@ -47,7 +47,7 @@ function getDb(): Database.Database {
 	return db;
 }
 
-// Test-only escape hatch, mirrors notes.ts.
+// Test-only escape hatch, mirrors status-db.ts.
 export function __setDbForTests(instance: Database.Database | null): void {
 	db = instance;
 }

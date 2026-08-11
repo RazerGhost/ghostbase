@@ -9,7 +9,6 @@ import { env } from '$env/dynamic/private';
 const run = promisify(execFile);
 
 const DBS: { name: string; envVar: string; defaultFile: string }[] = [
-	{ name: 'notes', envVar: 'NOTES_DB_PATH', defaultFile: 'notes.db' },
 	{ name: 'simkl-cache', envVar: 'SIMKL_CACHE_DB_PATH', defaultFile: 'simkl-cache.db' },
 	{ name: 'spotify-history', envVar: 'SPOTIFY_HISTORY_DB_PATH', defaultFile: 'spotify-history.db' },
 	{ name: 'status', envVar: 'STATUS_DB_PATH', defaultFile: 'status.db' },
@@ -29,10 +28,9 @@ export type BackupResult =
 	| { committed: false; dbs: string[]; message: string };
 
 // Backs up the persistent-volume state (the SQLite DBs listed in DBS below, dumped as text
-// so they diff cleanly in git — see dumpDatabaseToSql below — plus note
-// attachments and the media library) to a private git repo. Called from the
-// schedule-gated /api/backup endpoint and from the admin "run backup now"
-// button.
+// so they diff cleanly in git — see dumpDatabaseToSql below — plus the media
+// library) to a private git repo. Called from the schedule-gated /api/backup
+// endpoint and from the admin "run backup now" button.
 export async function runBackup(): Promise<BackupResult> {
 	const remote = env.BACKUP_GIT_REMOTE;
 	if (!remote) throw new Error('BACKUP_GIT_REMOTE not configured');
@@ -58,14 +56,6 @@ export async function runBackup(): Promise<BackupResult> {
 			if (sql === null) continue;
 			fs.writeFileSync(path.join(workDir, `${name}.sql`), sql);
 			dumped.push(name);
-		}
-
-		const attachmentsSrc =
-			env.NOTES_ATTACHMENTS_DIR || path.join(process.cwd(), 'data', 'note-attachments');
-		const attachmentsDest = path.join(workDir, 'note-attachments');
-		fs.rmSync(attachmentsDest, { recursive: true, force: true });
-		if (fs.existsSync(attachmentsSrc)) {
-			fs.cpSync(attachmentsSrc, attachmentsDest, { recursive: true });
 		}
 
 		const mediaSrc = env.MEDIA_DIR || path.join(process.cwd(), 'data', 'media');
@@ -137,10 +127,10 @@ export function dumpDatabaseToSql(dbPath: string): string | null {
 		const lines: string[] = ['PRAGMA foreign_keys=OFF;', 'BEGIN TRANSACTION;'];
 
 		// pragma_table_list distinguishes real tables from FTS5's internal
-		// "shadow" tables (e.g. notes_fts_data, notes_fts_config) — those are
-		// reserved names SQLite refuses to CREATE/INSERT into directly, and
-		// they're recreated automatically alongside their parent virtual
-		// table, so they must be skipped entirely rather than dumped as rows.
+		// "shadow" tables — those are reserved names SQLite refuses to
+		// CREATE/INSERT into directly, and they're recreated automatically
+		// alongside their parent virtual table, so they must be skipped
+		// entirely rather than dumped as rows.
 		const tableTypes = new Map(
 			(
 				db.prepare(`SELECT name, type FROM pragma_table_list()`).all() as {

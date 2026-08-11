@@ -21,8 +21,7 @@ Licensed under [PolyForm Noncommercial 1.0.0](LICENSE). In short: fork it, modif
 | `/watchlist` | Currently-watching + full library, pulled from Simkl |
 | `/watching` | Legacy route, redirects to `/watchlist` |
 | `/listens` | Spotify listening history stats, built from an imported data export |
-| `/notes` | Private notes area, gated behind GitHub OAuth login (owner-only) |
-| `/spotify-import` | Upload UI for Spotify history exports (same GitHub gate as `/notes`) |
+| `/spotify-import` | Upload UI for Spotify history exports (same GitHub gate as `/admin`) |
 | `/admin` | Private dashboard (same GitHub gate) linking to every editing tool: devlog/projects editors, status editor, watchlist cache inspector, media library, and backup status |
 
 ## Getting started
@@ -51,11 +50,10 @@ Every integration below is optional and degrades gracefully — the site runs fi
 | `ORIGIN` | adapter-node absolute URLs | **Required in production** behind a reverse proxy. Set in Coolify's UI, not a committed `.env`. |
 | `SPOTIFY_CLIENT_ID/SECRET`, `SPOTIFY_REFRESH_TOKEN` | Recently-played history + `/listens` live scrobbling | One-time OAuth authorization-code flow to mint the refresh token. The "now playing" widget itself gets live track data from Lanyard/Discord presence, not this. |
 | `SIMKL_CLIENT_ID`, `SIMKL_ACCESS_TOKEN` | `/watchlist` | Simkl's PIN device flow; token is long-lived (~5yr), no refresh needed. |
-| `GITHUB_CLIENT_ID/SECRET`, `SESSION_SECRET` | `/notes`, `/spotify-import` login gate | GitHub OAuth App restricted to a single allow-listed username (`site.githubUsername`). |
-| `NOTES_DB_PATH`, `NOTES_ATTACHMENTS_DIR` | `/notes` storage | Default to `./data/*`; must live on a persistent volume in production. |
-| `MEDIA_DIR` | `/admin/media`, devlog/project cover/gallery/body images | Default to `./data/media`; must live on a persistent volume in production. Served publicly (no login), unlike `NOTES_ATTACHMENTS_DIR`. |
+| `GITHUB_CLIENT_ID/SECRET`, `SESSION_SECRET` | `/admin`, `/spotify-import` login gate | GitHub OAuth App restricted to a single allow-listed username (`site.githubUsername`). |
+| `MEDIA_DIR` | `/admin/media`, devlog/project cover/gallery/body images | Default to `./data/media`; must live on a persistent volume in production. Served publicly (no login). |
 | `SIMKL_CACHE_DB_PATH` | Simkl lookup cache | Losing this is non-destructive — it just re-warms. |
-| `STATUS_DB_PATH` | `/notes/status`, homepage "Right now" card | Default to `./data/status.db`. Losing this just reverts to the hardcoded fallback in `status-db.ts`. |
+| `STATUS_DB_PATH` | `/admin/status`, homepage "Right now" card | Default to `./data/status.db`. Losing this just reverts to the hardcoded fallback in `status-db.ts`. |
 | `SPOTIFY_HISTORY_DB_PATH` | `/listens` storage | Populated by uploading a Spotify "extended streaming history" export at `/spotify-import`. **Not trivially rebuildable if lost** — the export is a one-time historical dump. |
 | `SPOTIFY_SCROBBLE_SECRET` | `/api/spotify/scrobble` | Optional live-scrobbling endpoint to fill the gap between manual exports; intended to be hit on a schedule. |
 | `BACKUP_SECRET`, `BACKUP_GIT_REMOTE` | `/api/backup` | Optional git-based backup of `data/` to a private repo; intended to be hit on a schedule. See below. |
@@ -75,7 +73,7 @@ Every integration below is optional and degrades gracefully — the site runs fi
 
 **`/listens`**: built from Spotify's own "extended streaming history" export, not the live API alone (which only exposes the last ~50 plays, not historical totals). Export JSON files are uploaded at `/spotify-import` (GitHub-gated), parsed and deduplicated into `spotify-history.db` by [spotify-history.ts](src/lib/server/spotify-history.ts) / [spotify-history-db.ts](src/lib/server/spotify-history-db.ts) — inserts are idempotent on `(played_at, spotify_uri, ms_played)`, so re-uploading overlapping exports is safe. A separate live-scrobbling endpoint polls Spotify's recently-played API to fill the gap between manual exports; re-importing an export clears out any live-scrobbled rows it now covers, since scrobbled `ms_played` is only an estimate.
 
-**Auth**: a single GitHub OAuth flow ([github-auth.ts](src/lib/server/github-auth.ts), `src/routes/auth/*`) gates both `/notes` and `/spotify-import`. Only the GitHub username configured as `site.githubUsername` in [config.ts](src/lib/config.ts) is allowed to complete login; anyone else is rejected at the callback with no session issued. Sessions are HMAC-signed cookies ([session.ts](src/lib/server/session.ts)).
+**Auth**: a single GitHub OAuth flow ([github-auth.ts](src/lib/server/github-auth.ts), `src/routes/auth/*`) gates both `/admin` and `/spotify-import`. Only the GitHub username configured as `site.githubUsername` in [config.ts](src/lib/config.ts) is allowed to complete login; anyone else is rejected at the callback with no session issued. Sessions are HMAC-signed cookies ([session.ts](src/lib/server/session.ts)).
 
 **Site-wide config**: [config.ts](src/lib/config.ts) centralizes site metadata, social links, nav links, and the gear list — check here before hardcoding any of that elsewhere.
 
@@ -85,28 +83,26 @@ Every integration below is optional and degrades gracefully — the site runs fi
 
 ## Persistent data
 
-Four SQLite files, plus two upload directories, live under `data/` at the repo/container root:
+Three SQLite files, plus one upload directory, live under `data/` at the repo/container root:
 
-- **`notes.db`** — private notes ([notes.ts](src/lib/server/notes.ts)). Losing this loses real content.
 - **`spotify-history.db`** — imported Spotify listening history ([spotify-history-db.ts](src/lib/server/spotify-history-db.ts)). Losing this loses real content that can only be rebuilt by re-requesting and re-importing the Spotify export (can take up to 30 days to arrive) — not something that "just re-warms".
 - **`simkl-cache.db`** — cached Simkl genre/synopsis/runtime lookups plus a full-library fallback snapshot ([simkl-cache.ts](src/lib/server/simkl-cache.ts)). Losing this is non-destructive — `/watchlist`'s enrichment data just goes cold and re-warms itself over the next several page loads.
 - **`status.db`** — the homepage's "Right now" status items ([status-db.ts](src/lib/server/status-db.ts)), edited at `/admin/status`. Losing this just reverts to the hardcoded fallback.
-- **`note-attachments/`** — images pasted/uploaded into private note bodies, served under auth. See [docs/notes.md](docs/notes.md#attachments).
 - **`media/`** — images uploaded through `/admin/media` for devlog/project covers, galleries, and post bodies, served publicly (no login). See [docs/environment.md](docs/environment.md).
 
-All default to `./data/*` (overridable via `NOTES_DB_PATH` / `SIMKL_CACHE_DB_PATH` / `SPOTIFY_HISTORY_DB_PATH` / `STATUS_DB_PATH` / `NOTES_ATTACHMENTS_DIR` / `MEDIA_DIR`). The Dockerfile declares `/app/data` as a `VOLUME`, but **that alone does not persist anything across a Coolify redeploy** — Coolify replaces the container from the image each deploy, so an anonymous volume goes with it. In Coolify, under the app's **Storages** tab, add a persistent volume mounted at `/app/data` *before* the first real deploy.
+All default to `./data/*` (overridable via `SIMKL_CACHE_DB_PATH` / `SPOTIFY_HISTORY_DB_PATH` / `STATUS_DB_PATH` / `MEDIA_DIR`). The Dockerfile declares `/app/data` as a `VOLUME`, but **that alone does not persist anything across a Coolify redeploy** — Coolify replaces the container from the image each deploy, so an anonymous volume goes with it. In Coolify, under the app's **Storages** tab, add a persistent volume mounted at `/app/data` *before* the first real deploy.
 
 ### Backups
 
-A persistent volume protects against redeploys, not against the server itself being renewed or deleted. `GET /api/backup` ([+server.ts](src/routes/api/backup/+server.ts)) dumps the four DBs above to plain-text SQL — schema + `INSERT` statements via [backup.ts](src/lib/server/backup.ts), not the raw binary files, so changes diff cleanly in git instead of bloating the repo — plus `note-attachments/` and `media/`, and commits + pushes them to a private git repo. The same logic (`runBackup()`) can also be triggered manually from `/admin/backups`, which shows when the last backup ran. See [docs/backups.md](docs/backups.md) for the full setup.
+A persistent volume protects against redeploys, not against the server itself being renewed or deleted. `GET /api/backup` ([+server.ts](src/routes/api/backup/+server.ts)) dumps the DBs above to plain-text SQL — schema + `INSERT` statements via [backup.ts](src/lib/server/backup.ts), not the raw binary files, so changes diff cleanly in git instead of bloating the repo — plus `media/`, and commits + pushes them to a private git repo. The same logic (`runBackup()`) can also be triggered manually from `/admin/backups`, which shows when the last backup ran. See [docs/backups.md](docs/backups.md) for the full setup.
 
 Setup:
 
 1. Create a private repo (e.g. `ghostbase-backups`) and a fine-grained GitHub PAT scoped to just that repo's **Contents: Read & write**.
 2. Set `BACKUP_SECRET` (any random string) and `BACKUP_GIT_REMOTE=https://x-access-token:<PAT>@github.com/you/ghostbase-backups.git` in Coolify's environment UI.
-3. Add a Coolify Scheduled Task (or external cron) that hits `GET /api/backup` with `Authorization: Bearer <BACKUP_SECRET>` — nightly is plenty, since this only backs up state that changes slowly (notes, watch history, listens).
+3. Add a Coolify Scheduled Task (or external cron) that hits `GET /api/backup` with `Authorization: Bearer <BACKUP_SECRET>` — nightly is plenty, since this only backs up state that changes slowly (watch history, listens).
 
-Restoring: `sqlite3 new.db < notes.sql` (etc.) rebuilds each `.db` from its dump.
+Restoring: `sqlite3 new.db < status.sql` (etc.) rebuilds each `.db` from its dump.
 
 ## Deployment
 

@@ -18,7 +18,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 
 	if (!code || !state || !rawOauthState) denied('state');
 
-	let redirectTo = '/notes';
+	let redirectTo = '/admin';
 	try {
 		const parsed = JSON.parse(rawOauthState);
 		if (parsed.state !== state) denied('state');

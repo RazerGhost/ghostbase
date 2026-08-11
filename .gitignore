@@ -17,8 +17,8 @@ Thumbs.db
 .env.*
 !.env.example
 
-# Local dev SQLite DB for /notes (production path is set via NOTES_DB_PATH,
-# on a Coolify volume outside the repo)
+# Local dev SQLite DBs (production paths are set via env vars, on a Coolify
+# volume outside the repo)
 /data
 
 vite.config.js.timestamp-*

@@ -7,8 +7,6 @@
 	import Clapperboard from '@lucide/svelte/icons/clapperboard';
 	import Music from '@lucide/svelte/icons/music';
 	import Search from '@lucide/svelte/icons/search';
-	import StickyNote from '@lucide/svelte/icons/sticky-note';
-	import ScrollText from '@lucide/svelte/icons/scroll-text';
 	import Settings from '@lucide/svelte/icons/settings';
 	import X from '@lucide/svelte/icons/x';
 	import Plus from '@lucide/svelte/icons/plus';
@@ -71,25 +69,19 @@
 	let queryInput = $state(data.unsplashQuery);
 	let icsUrlInput = $state(data.icsUrl ?? '');
 
-	// Notes is intentionally left out of the site-wide nav (it's a private,
-	// login-gated route) — but it belongs on this personal dashboard, so it's
-	// appended here rather than added to the shared navLinks config.
-	const dashboardLinks = [...navLinks, { label: 'Notes', href: '/notes' }];
+	const dashboardLinks = navLinks;
 
 	const linkIcons = {
 		Projects: FolderGit2,
 		Devlog: NotebookPen,
 		Gear: Wrench,
 		Watchlist: Clapperboard,
-		Listens: Music,
-		Notes: StickyNote
+		Listens: Music
 	} as const;
 
 	// Search bangs, listed here (rather than a plain Record) so the same data
 	// can drive both dispatch and the "!" autocomplete hint in the search
 	// dropdown. Anything else (or no bang) falls through to DuckDuckGo.
-	// '!notes' is a local bang — it searches this site's own private notes
-	// instead of the open web, so its run() is a relative path, not a full URL.
 	type Bang = { trigger: string; label: string; run: (q: string) => string };
 	const BANGS: Bang[] = [
 		{ trigger: '!d', label: 'DuckDuckGo', run: (q) => `https://duckduckgo.com/?q=${encodeURIComponent(q)}` },
@@ -113,8 +105,7 @@
 			trigger: '!maps',
 			label: 'Google Maps',
 			run: (q) => `https://www.google.com/maps/search/${encodeURIComponent(q)}`
-		},
-		{ trigger: '!notes', label: 'Notes', run: (q) => `/notes?q=${encodeURIComponent(q)}` }
+		}
 	];
 	const bangs: Record<string, (q: string) => string> = Object.fromEntries(
 		BANGS.map((b) => [b.trigger, b.run])
@@ -633,10 +624,6 @@
 			.padStart(2, '0')}:${(pomodoroSecondsLeft % 60).toString().padStart(2, '0')}`
 	);
 
-	// --- Quick note capture --------------------------------------------
-	let noteBody = $state('');
-	let noteSaved = $state(false);
-
 	// --- To-do checklist --------------------------------------------------
 	// Done items sink to the bottom (display-only sort — doesn't touch the
 	// server-side `position`, same idea as the quick links click-sort toggle).
@@ -658,12 +645,10 @@
 		'discord',
 		'watching',
 		'right-now',
-		'recent-notes',
 		'weather',
 		'focus',
 		'todo',
-		'agenda',
-		'note'
+		'agenda'
 	] as const;
 	type WidgetId = (typeof WIDGET_IDS)[number];
 
@@ -671,13 +656,11 @@
 		'right-now': { label: 'Right now', icon: null },
 		'now-playing': { label: 'Now playing', icon: Music },
 		discord: { label: 'Discord', icon: null },
-		'recent-notes': { label: 'Recent notes', icon: ScrollText },
 		watching: { label: 'Currently watching', icon: Clapperboard },
 		weather: { label: 'Weather', icon: CloudSun },
 		focus: { label: 'Focus timer', icon: Timer },
 		todo: { label: 'To-do', icon: ListTodo },
-		agenda: { label: 'Agenda', icon: CalendarDays },
-		note: { label: 'Quick note', icon: StickyNote }
+		agenda: { label: 'Agenda', icon: CalendarDays }
 	};
 
 	function widgetHasData(id: WidgetId): boolean {
@@ -865,7 +848,7 @@
 	// Real rendered height per slot, kept in sync via a ResizeObserver (see
 	// registerHeightObserver) so the default-position packer below can
 	// place cards by their actual height instead of a fixed row height —
-	// widgets render at very different heights (e.g. a 3-item notes list
+	// widgets render at very different heights (e.g. a 3-item watchlist
 	// vs. a single status line), so a fixed row spacing overlapped taller
 	// cards with whatever landed in the row below them.
 	let measuredHeights = $state<Record<string, number>>({});
@@ -1697,25 +1680,6 @@
 			</ListeningNowCard>
 		{:else if id === 'discord'}
 			<DiscordPresence activityOnly />
-		{:else if id === 'recent-notes'}
-			{#if data.recentNotes.length}
-				<ul class="grid gap-1.5">
-					{#each data.recentNotes as note}
-						<li>
-							<a href="/notes/{note.id}" class="group flex items-center gap-2 text-sm text-white/80 hover:text-primary">
-								<span
-									class="grid h-6 w-6 flex-shrink-0 place-items-center rounded bg-white/5 text-white/40 group-hover:text-primary"
-								>
-									<ScrollText size={12} aria-hidden="true" />
-								</span>
-								<span class="truncate">{note.title}</span>
-							</a>
-						</li>
-					{/each}
-				</ul>
-			{:else}
-				<p class="text-sm text-white/60">No notes yet.</p>
-			{/if}
 		{:else if id === 'watching'}
 			<ul class="grid gap-2">
 				{#each data.watching.slice(0, 2) as item}
@@ -1855,36 +1819,6 @@
 					</li>
 				{/each}
 			</ul>
-		{:else if id === 'note'}
-			<form
-				method="POST"
-				action="?/quickNote"
-				class="flex items-center gap-2"
-				use:enhance={() => {
-					return async ({ update, result }) => {
-						await update({ reset: false });
-						if (result.type === 'success') {
-							noteBody = '';
-							noteSaved = true;
-							setTimeout(() => (noteSaved = false), 2000);
-						}
-					};
-				}}
-			>
-				<input
-					name="body"
-					type="text"
-					bind:value={noteBody}
-					placeholder="Jot a quick note…"
-					class="glass min-w-0 flex-1 rounded-lg px-3 py-1.5 text-sm text-white placeholder-white/40 outline-none focus:border-primary/60"
-				/>
-				<button
-					type="submit"
-					class="flex-shrink-0 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-white/80 transition-colors hover:border-primary/50 hover:text-primary"
-				>
-					{noteSaved ? 'Saved ✓' : 'Save'}
-				</button>
-			</form>
 		{/if}
 	{/snippet}
 

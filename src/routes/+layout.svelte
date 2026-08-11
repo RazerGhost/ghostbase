@@ -10,11 +10,9 @@
 
 	let { data, children }: LayoutProps = $props();
 
-	// /notes is a full-bleed app view — its fixed-viewport canvas and own
-	// Ctrl+K palette don't coexist with the site chrome (pushed page height
-	// past 100vh, palette conflicts). /newtab stands in for the browser's
-	// own new-tab page, so chrome doesn't belong there either.
-	const isFullBleed = $derived(page.url.pathname === '/notes' || page.url.pathname === '/newtab');
+	// /newtab stands in for the browser's own new-tab page, so site chrome
+	// (nav, footer, Ctrl+K palette) doesn't belong there.
+	const isFullBleed = $derived(page.url.pathname === '/newtab');
 </script>
 
 {#if isFullBleed}

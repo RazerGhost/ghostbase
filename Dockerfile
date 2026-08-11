@@ -69,9 +69,10 @@ COPY src/lib/server/fonts ./src/lib/server/fonts
 
 EXPOSE 3000
 
-# SQLite state that must survive redeploys: notes.db (src/lib/server/notes.ts)
-# and simkl-cache.db (src/lib/server/simkl-cache.ts), both default to living
-# under here. The VOLUME line alone does NOT persist anything across a
+# SQLite state that must survive redeploys: spotify-history.db
+# (src/lib/server/spotify-history-db.ts) and simkl-cache.db
+# (src/lib/server/simkl-cache.ts), both default to living under here.
+# The VOLUME line alone does NOT persist anything across a
 # Coolify redeploy — Coolify replaces the container from the image each
 # deploy, so an anonymous volume goes with it. A real deploy needs a
 # persistent volume mounted at this same path in Coolify's "Storages" tab

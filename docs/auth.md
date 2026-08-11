@@ -1,6 +1,6 @@
 # Auth
 
-Gates `/notes` and `/spotify-import` behind a single owner's GitHub account. There is no multi-user support — this is an allow-list-of-one, not a real auth system.
+Gates `/admin` and `/spotify-import` behind a single owner's GitHub account. There is no multi-user support — this is an allow-list-of-one, not a real auth system.
 
 ## Flow
 
@@ -8,7 +8,7 @@ Gates `/notes` and `/spotify-import` behind a single owner's GitHub account. The
 2. GitHub redirects back to `GET /auth/callback` ([+server.ts](../src/routes/auth/callback/+server.ts)) with `code` + `state`.
 3. The callback verifies `state` matches the cookie (CSRF protection), exchanges `code` for an access token, then calls `fetchGithubLogin` to get the authenticated user's GitHub login.
 4. The login is compared case-insensitively against `site.githubUsername` in [config.ts](../src/lib/config.ts). Any mismatch redirects to `/auth/denied?reason=not-owner` — **no session is issued for anyone else**, full stop.
-5. On match, a signed session token is minted ([session.ts](../src/lib/server/session.ts)) and set as an `httpOnly`, `sameSite=lax` cookie (`rg_session`, 30-day max age), then redirects to `redirectTo` (defaults to `/notes`).
+5. On match, a signed session token is minted ([session.ts](../src/lib/server/session.ts)) and set as an `httpOnly`, `sameSite=lax` cookie (`rg_session`, 30-day max age), then redirects to `redirectTo` (defaults to `/admin`).
 
 ## Sessions
 

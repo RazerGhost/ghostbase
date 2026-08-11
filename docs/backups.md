@@ -1,30 +1,28 @@
 # Backups
 
-A Coolify persistent volume ([deployment.md](deployment.md)) protects `data/` across redeploys, but not against the server itself being renewed, rebuilt, or deleted — that requires state living somewhere outside the box entirely. `GET /api/backup` ([+server.ts](../src/routes/api/backup/+server.ts)) does that: it dumps the four `data/` SQLite DBs plus `note-attachments/` and the media library (`media/`) and pushes them to a private git repo, on the same "secret-gated endpoint hit by a scheduler" pattern as the Spotify scrobble endpoint ([listens.md](listens.md)).
+A Coolify persistent volume ([deployment.md](deployment.md)) protects `data/` across redeploys, but not against the server itself being renewed, rebuilt, or deleted — that requires state living somewhere outside the box entirely. `GET /api/backup` ([+server.ts](../src/routes/api/backup/+server.ts)) does that: it dumps the `data/` SQLite DBs plus the media library (`media/`) and pushes them to a private git repo, on the same "secret-gated endpoint hit by a scheduler" pattern as the Spotify scrobble endpoint ([listens.md](listens.md)).
 
 The actual clone/dump/mirror/commit/push logic lives in `runBackup()` in [backup.ts](../src/lib/server/backup.ts), not the endpoint itself — `+server.ts` is just a secret check that calls it. `runBackup()` is also called by the "Run backup now" button on `/admin/backups` (gated by the ordinary `/admin` login, not `BACKUP_SECRET`), which additionally reads `getLastBackupInfo()` (a shallow clone of the backup remote to read its last commit) to show when the last backup ran, and `backupConfigured()` to hide the page's controls entirely when `BACKUP_GIT_REMOTE` isn't set.
 
 ## Why text dumps, not the raw `.db` files
 
-Committing `notes.db` directly would work, but SQLite's on-disk format is a B-tree — a single row change can rewrite pages scattered across the whole file, so git would store a near-full binary copy on every backup with no useful delta compression, and diffs would be unreadable.
+Committing a `.db` file directly would work, but SQLite's on-disk format is a B-tree — a single row change can rewrite pages scattered across the whole file, so git would store a near-full binary copy on every backup with no useful delta compression, and diffs would be unreadable.
 
-Instead, [backup.ts](../src/lib/server/backup.ts) dumps each DB to plain-text SQL — schema (`CREATE TABLE`/`INDEX`/`TRIGGER`) followed by one `INSERT` statement per row, the same shape `sqlite3 <file> .dump` produces. Text diffs cleanly (an edited note shows up as one changed `INSERT` line) and git's delta compression handles the repetition across snapshots well.
+Instead, [backup.ts](../src/lib/server/backup.ts) dumps each DB to plain-text SQL — schema (`CREATE TABLE`/`INDEX`/`TRIGGER`) followed by one `INSERT` statement per row, the same shape `sqlite3 <file> .dump` produces. Text diffs cleanly (an edited row shows up as one changed `INSERT` line) and git's delta compression handles the repetition across snapshots well.
 
-To restore a table from a dump: `sqlite3 new.db < notes.sql`.
+To restore a table from a dump: `sqlite3 new.db < status.sql`.
 
 ### FTS5 shadow tables are deliberately skipped
 
-`notes.db` has an external-content FTS5 index (`notes_fts`, from [notes.ts](../src/lib/server/notes.ts)) backing `/notes` search. FTS5 manages its own internal "shadow" tables (`notes_fts_data`, `notes_fts_idx`, `notes_fts_docsize`, `notes_fts_config`) — SQLite refuses direct `INSERT`s into these (`object name reserved for internal use`), and they're recreated automatically as a side effect of `CREATE VIRTUAL TABLE notes_fts`.
-
-`backup.ts` queries `pragma_table_list()` to tell real tables apart from `shadow` and `virtual` ones, and skips dumping row data for both — shadow tables because writing to them directly is illegal, and the virtual table itself because it holds no independent data (it indexes `notes`, via `content='notes'`). This is safe because `notes.ts`'s `openDb()` already re-backfills `notes_fts` from the `notes` table on every startup (`INSERT INTO notes_fts(...) SELECT ... WHERE id NOT IN (SELECT rowid FROM notes_fts)`) — so restoring `notes.sql` into a fresh DB and starting the app rebuilds the search index automatically, with no explicit step needed in the backup/restore flow.
+`backup.ts` queries `pragma_table_list()` to tell real tables apart from `shadow` and `virtual` ones, and skips dumping row data for both — shadow tables because SQLite refuses direct `INSERT`s into these reserved names (`object name reserved for internal use`), and virtual tables because they hold no independent data of their own. This matters for any DB that adds an FTS5 (or other virtual-table) index in the future: its shadow tables are recreated automatically as a side effect of `CREATE VIRTUAL TABLE`, so skipping them in the dump is safe as long as the app re-backfills the index from its source table on startup.
 
 ## Endpoint behavior ([+server.ts](../src/routes/api/backup/+server.ts))
 
 On `GET /api/backup` with a valid secret:
 
 1. Shallow-clones `BACKUP_GIT_REMOTE` (branch `BACKUP_GIT_BRANCH`, default `main`) into a temp directory. If the branch doesn't exist yet (first run against a freshly created empty repo), falls back to cloning the repo and creating an orphan branch.
-2. Dumps each of the four DBs (skipping any that don't exist yet, e.g. `status.db` before `/notes/status` has ever been used) to `<name>.sql` in the checkout.
-3. Mirrors `note-attachments/` and the media library (`MEDIA_DIR`, default `data/media`) into the checkout (deletes and re-copies each, so deleted files drop out of the backup too).
+2. Dumps each DB (skipping any that don't exist yet, e.g. `status.db` before `/admin/status` has ever been used) to `<name>.sql` in the checkout.
+3. Mirrors the media library (`MEDIA_DIR`, default `data/media`) into the checkout (deletes and re-copies it, so deleted files drop out of the backup too).
 4. `git add -A`; if nothing changed since the last run, returns early without committing.
 5. Otherwise commits (author identity from `BACKUP_GIT_USER_NAME`/`BACKUP_GIT_USER_EMAIL`, both optional) and pushes.
 6. Deletes the temp directory in a `finally` block regardless of outcome.
@@ -48,7 +46,7 @@ Gated the same way as the scrobble endpoint: prefer `Authorization: Bearer <BACK
    ```
    curl -fsS -H "Authorization: Bearer $BACKUP_SECRET" https://razerghost.xyz/api/backup
    ```
-   Nightly is plenty — everything backed up here changes slowly (notes, watch history, listening stats), unlike the scrobble endpoint which needs a tight interval to avoid losing Spotify history.
+   Nightly is plenty — everything backed up here changes slowly (watch history, listening stats), unlike the scrobble endpoint which needs a tight interval to avoid losing Spotify history.
 
 ## Credential exposure notes
 

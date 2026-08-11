@@ -1,6 +1,5 @@
 <script lang="ts">
 	import Seo from '$lib/components/Seo.svelte';
-	import Network from '@lucide/svelte/icons/network';
 	import FileText from '@lucide/svelte/icons/file-text';
 	import FolderKanban from '@lucide/svelte/icons/folder-kanban';
 	import Activity from '@lucide/svelte/icons/activity';
@@ -11,12 +10,6 @@
 	import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
 
 	const tools = [
-		{
-			label: 'Notes graph',
-			href: '/notes',
-			icon: Network,
-			description: 'The canvas of private notes — search, tags, folders, and saved views.'
-		},
 		{
 			label: 'Devlog editor',
 			href: '/admin/devlog',

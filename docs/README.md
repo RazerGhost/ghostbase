@@ -5,7 +5,6 @@ In-depth, implementation-level documentation. Start with the top-level [README.m
 - [environment.md](environment.md) — one-time setup steps for every `.env` variable (OAuth apps, PIN flows, generating secrets)
 - [content-pipeline.md](content-pipeline.md) — devlog + projects markdown pipeline, embeds, RSS/OG image generation
 - [auth.md](auth.md) — GitHub OAuth login gate, session cookies
-- [notes.md](notes.md) — `/notes` data model, full-text search, revisions, soft delete
 - [watchlist.md](watchlist.md) — Simkl integration, detail enrichment, outage fallback
 - [listens.md](listens.md) — Spotify extended history import, live scrobbling, stats queries
 - [integrations.md](integrations.md) — Spotify "now playing" widget, Discord presence, GitHub activity

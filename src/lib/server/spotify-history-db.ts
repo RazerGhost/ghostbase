@@ -48,7 +48,7 @@ function getDb(): Database.Database {
 	return db;
 }
 
-// Test-only escape hatch, mirrors notes.ts / simkl-cache.ts. Also drops the
+// Test-only escape hatch, mirrors simkl-cache.ts. Also drops the
 // aggregate memo — cached results from a previous test's database would
 // otherwise bleed into the next one.
 export function __setDbForTests(instance: Database.Database | null): void {

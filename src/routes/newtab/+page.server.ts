@@ -27,7 +27,6 @@ import {
 	removeTodoItem
 } from '$lib/server/newtab-settings';
 import { getLibraryWithFallback, simklConfigured } from '$lib/server/simkl';
-import { createNote, listNotes } from '$lib/server/notes';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async () => {
@@ -69,7 +68,6 @@ export const load: PageServerLoad = async () => {
 		focusStats: getFocusStats(),
 		focusWeekly: getFocusWeeklyStats(),
 		recentSearches: getRecentSearches(),
-		recentNotes: listNotes().slice(0, 3),
 		todoItems: getTodoItems()
 	};
 };
@@ -208,15 +206,6 @@ export const actions: Actions = {
 		const endedAt = String(data.get('endedAt') ?? '');
 		if (!startedAt || !endedAt) return { success: false };
 		logFocusSession(kind, completed, startedAt, endedAt);
-		return { success: true };
-	},
-
-	quickNote: async ({ request }) => {
-		const data = await request.formData();
-		const body = String(data.get('body') ?? '').trim();
-		if (!body) return { success: false };
-		const title = body.split('\n')[0].slice(0, 80) || 'Quick note';
-		createNote({ title, body, folder: '', tags: 'quick-capture' });
 		return { success: true };
 	}
 };

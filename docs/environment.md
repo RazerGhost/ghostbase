@@ -22,9 +22,9 @@ Rotating this value invalidates all existing sessions.
 
 ### `BODY_SIZE_LIMIT`
 
-Extended streaming history exports can be tens of MB across many files. adapter-node's default request body limit (512kb) will reject uploads above that at `/spotify-import` — raise it in Coolify's environment UI if your export is large. This limit is global, so it also covers image uploads to note bodies at `/api/notes/attachments` (capped at 8MB there). Accepts a byte count with an optional K/M/G suffix (e.g. `200M`) — **not** `0`, which SvelteKit treats as a 0-byte limit rather than "unlimited". Use the literal string `Infinity` to fully disable the limit. See [SvelteKit's adapter-node docs](https://svelte.dev/docs/kit/adapter-node#Environment-variables-BODY_SIZE_LIMIT).
+Extended streaming history exports can be tens of MB across many files. adapter-node's default request body limit (512kb) will reject uploads above that at `/spotify-import` — raise it in Coolify's environment UI if your export is large. Accepts a byte count with an optional K/M/G suffix (e.g. `200M`) — **not** `0`, which SvelteKit treats as a 0-byte limit rather than "unlimited". Use the literal string `Infinity` to fully disable the limit. See [SvelteKit's adapter-node docs](https://svelte.dev/docs/kit/adapter-node#Environment-variables-BODY_SIZE_LIMIT).
 
-## GitHub login gate (`/notes`, `/admin`, `/spotify-import`, `/newtab`)
+## GitHub login gate (`/admin`, `/spotify-import`, `/newtab`)
 
 ### `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`
 
@@ -54,9 +54,9 @@ See [integrations.md](integrations.md) for how the token is used at runtime.
 
 ### `SPOTIFY_HISTORY_DB_PATH` / Listens page
 
-Powers `/listens`, built from Spotify's own "extended streaming history" data export (request it at https://support.spotify.com/us/article/understanding-your-data/, can take up to 30 days to arrive), not the live API. Upload the export's JSON files at `/spotify-import`, gated behind the same GitHub login as `/notes` — no separate credentials needed.
+Powers `/listens`, built from Spotify's own "extended streaming history" data export (request it at https://support.spotify.com/us/article/understanding-your-data/, can take up to 30 days to arrive), not the live API. Upload the export's JSON files at `/spotify-import`, gated behind the same GitHub login as `/admin` — no separate credentials needed.
 
-Optional — path to the SQLite file backing this page ([spotify-history-db.ts](../src/lib/server/spotify-history-db.ts)). Defaults to `./data/spotify-history.db` if unset. Unlike `NOTES_DB_PATH`, this file is not trivially rebuildable if lost: the export is a one-time historical dump, so make sure this points inside the same persistent Coolify volume as the other `*_DB_PATH` vars.
+Optional — path to the SQLite file backing this page ([spotify-history-db.ts](../src/lib/server/spotify-history-db.ts)). Defaults to `./data/spotify-history.db` if unset. This file is not trivially rebuildable if lost: the export is a one-time historical dump, so make sure this points inside the same persistent Coolify volume as the other `*_DB_PATH` vars.
 
 See [listens.md](listens.md) for the import/parsing details.
 
@@ -94,20 +94,13 @@ See [watchlist.md](watchlist.md) for caching/enrichment details.
 
 ### `SIMKL_CACHE_DB_PATH`
 
-Optional — path to the SQLite cache backing the Watching page's genre/synopsis enrichment ([simkl-cache.ts](../src/lib/server/simkl-cache.ts)). Defaults to `./data/simkl-cache.db` if unset. Unlike `NOTES_DB_PATH` below, losing this file isn't destructive — it just goes cold and re-warms itself over the next several page loads — but pointing it at the same Coolify persistent volume as `NOTES_DB_PATH` (i.e. leaving both unset, so they share `./data`) avoids that cold start on every redeploy.
-
-## `/notes`
-
-### `NOTES_DB_PATH` / `NOTES_ATTACHMENTS_DIR`
-
-- `NOTES_DB_PATH` — optional, path to the SQLite file backing `/notes` ([notes.ts](../src/lib/server/notes.ts)). Defaults to `./data/notes.db` if unset. In production this must point inside a Coolify persistent volume mount so notes survive redeploys — do not leave it on the container's ephemeral filesystem.
-- `NOTES_ATTACHMENTS_DIR` — optional, directory holding images pasted/uploaded into note bodies ([+server.ts](../src/routes/api/notes/attachments/+server.ts)). Defaults to `./data/note-attachments` if unset. Point this at the same persistent Coolify volume as `NOTES_DB_PATH` — losing it breaks any note that embeds an image.
+Optional — path to the SQLite cache backing the Watching page's genre/synopsis enrichment ([simkl-cache.ts](../src/lib/server/simkl-cache.ts)). Defaults to `./data/simkl-cache.db` if unset. Losing this file isn't destructive — it just goes cold and re-warms itself over the next several page loads — but pointing it at the same Coolify persistent volume as the other `*_DB_PATH` vars (i.e. leaving them all unset, so they share `./data`) avoids that cold start on every redeploy.
 
 ## Media library
 
 ### `MEDIA_DIR`
 
-Optional, directory holding images uploaded through the `/admin/media` library ([media.ts](../src/lib/server/media.ts)), used for devlog/project cover images, galleries, and post bodies. Defaults to `./data/media` if unset. Unlike `NOTES_ATTACHMENTS_DIR`, files here are served publicly (no login required) since they appear on public devlog/project pages — only uploading and deleting are admin-gated. Point this at the same persistent Coolify volume as the other `data/*` paths — losing it breaks any published post/project referencing an uploaded image.
+Optional, directory holding images uploaded through the `/admin/media` library ([media.ts](../src/lib/server/media.ts)), used for devlog/project cover images, galleries, and post bodies. Defaults to `./data/media` if unset. Files here are served publicly (no login required) since they appear on public devlog/project pages — only uploading and deleting are admin-gated. Point this at the same persistent Coolify volume as the other `data/*` paths — losing it breaks any published post/project referencing an uploaded image.
 
 ## Homepage "Right now" card
 

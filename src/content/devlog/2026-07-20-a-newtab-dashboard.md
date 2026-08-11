@@ -61,8 +61,6 @@ there:
   keeping.
 - A **pomodoro-style focus timer** with daily stats, because a new-tab page
   is exactly where you'd glance to start one.
-- **Quick note capture** straight into the [notes graph](/devlog/2026-07-21-the-notes-graph) —
-  type a thought, it lands as a real note without a context switch.
 - A small **watchlist widget** pulling from the same Simkl-backed data as
   `/watchlist`.
 - **Client-side persisted drag/dock layout** for the widgets — where you put

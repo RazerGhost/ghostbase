@@ -23,8 +23,8 @@
 <main class="mx-auto max-w-2xl px-6 py-16">
 	<h1 class="text-3xl font-extrabold tracking-tight text-white">Backups</h1>
 	<p class="mt-2 text-sm text-dim">
-		Dumps <code>notes.db</code>, <code>simkl-cache.db</code>, <code>spotify-history.db</code>, and
-		<code>status.db</code> (plus note attachments and the media library) to a private git repo.
+		Dumps <code>simkl-cache.db</code>, <code>spotify-history.db</code>, and
+		<code>status.db</code> (plus the media library) to a private git repo.
 	</p>
 
 	{#if !data.configured}

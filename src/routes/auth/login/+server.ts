@@ -8,7 +8,7 @@ import type { RequestHandler } from './$types';
 // leading "//" would be interpreted as protocol-relative and escape the site.
 function safeRedirectTarget(value: string | null): string {
 	if (value && value.startsWith('/') && !value.startsWith('//')) return value;
-	return '/notes';
+	return '/admin';
 }
 
 export const GET: RequestHandler = ({ url, cookies }) => {
