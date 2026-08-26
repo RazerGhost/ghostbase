@@ -1,7 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="RazerGhost app icon">
   <title>RazerGhost — app icon (ghost on cyan tile)</title>
   <rect width="100" height="100" rx="22" fill="#22d3ee"></rect>
-  <path d="M24 77 V42 A26 26 0 0 1 76 42 V77 L67.3 84 L58.7 77 L50 84 L41.3 77 L32.7 84 Z" fill="#0a0a0a"></path>
-  <circle cx="41" cy="43" r="4.8" fill="#22d3ee"></circle>
-  <circle cx="59" cy="43" r="4.8" fill="#22d3ee"></circle>
+  <path d="M23.75 77.727 L23.75 42.273 C23.75 27.311 35.6 15 50 15 C64.4 15 76.25 27.311 76.25 42.273 L76.25 77.727 L67.5 85 L58.75 77.727 L50 85 L41.25 77.727 L32.5 85 Z M37.225 44.093 A4.025 4.025 0 1 0 45.275 44.093 A4.025 4.025 0 1 0 37.225 44.093 Z M54.725 44.093 A4.025 4.025 0 1 0 62.775 44.093 A4.025 4.025 0 1 0 54.725 44.093 Z" fill="#0a0a0a" fill-rule="evenodd"></path>
 </svg>

@@ -25,9 +25,7 @@
 			RazerGhost
 		</span>
 		<img
-			src={field === 'dark'
-				? '/brand/logo-wordmark-ghost.svg'
-				: '/brand/logo-wordmark-ghost-light.svg'}
+			src={field === 'dark' ? '/brand/ghost-mark.svg' : '/brand/ghost-mark-light.svg'}
 			width="22"
 			height="22"
 			alt=""

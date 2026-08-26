@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="RazerGhost ghost mark">
   <title>RazerGhost — ghost mark (cyan on dark)</title>
-  <path d="M20 81 V42 A30 30 0 0 1 80 42 V81 L70 89 L60 81 L50 89 L40 81 L30 89 Z" fill="#22d3ee"></path>
-  <circle cx="39" cy="43" r="4.2" fill="#0a0a0a"></circle>
-  <circle cx="61" cy="43" r="4.2" fill="#0a0a0a"></circle>
+  <path d="M20 81.688 L20 41.169 C20 24.07 33.542 10 50 10 C66.458 10 80 24.07 80 41.169 L80 81.688 L70 90 L60 81.688 L50 90 L40 81.688 L30 90 Z" fill="#22d3ee"></path>
+  <circle cx="40" cy="43.249" r="4" fill="#0a0a0a"></circle>
+  <circle cx="60" cy="43.249" r="4" fill="#0a0a0a"></circle>
 </svg>

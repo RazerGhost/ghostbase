@@ -1,9 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 210 50" role="img">
   <title>RazerGhost — wordmark with ghost signature (dark field)</title>
   <text x="2" y="40" font-family="Inter, &#39;Inter Variable&#39;, system-ui, sans-serif" font-size="40" font-weight="800" fill="#ffffff" letter-spacing="-0.8" textLength="184.8" lengthAdjust="spacing">RazerGhost</text>
-  <g transform="translate(190 24) scale(0.17)">
-    <path d="M20 81 V42 A30 30 0 0 1 80 42 V81 L70 89 L60 81 L50 89 L40 81 L30 89 Z" fill="#22d3ee"></path>
-    <circle cx="39" cy="43" r="5.5" fill="#0a0a0a"></circle>
-    <circle cx="61" cy="43" r="5.5" fill="#0a0a0a"></circle>
-  </g>
+  <path d="M194 37.649 L194 31.065 C194 28.286 196.201 26 198.875 26 C201.549 26 203.75 28.286 203.75 31.065 L203.75 37.649 L202.125 39 L200.5 37.649 L198.875 39 L197.25 37.649 L195.625 39 Z" fill="#22d3ee"></path>
+  <circle cx="197.25" cy="31.403" r="0.91" fill="#0a0a0a"></circle>
+  <circle cx="200.5" cy="31.403" r="0.91" fill="#0a0a0a"></circle>
 </svg>
